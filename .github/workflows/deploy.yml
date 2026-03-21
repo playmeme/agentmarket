@@ -32,6 +32,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           envs: GITHUB_SHA,RESEND_API_KEY
           script: |
+            set -e
             SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
 
             cd ~/agentmarket/agentmarket.git
@@ -43,12 +44,13 @@ jobs:
             EOF
 
             # Build and restart
-            podman build --build-arg VERSION=$SHORT_SHA -t localhost/webapp-image .
+            podman build --no-cache --build-arg VERSION=$SHORT_SHA -t localhost/webapp-image .
             systemctl --user daemon-reload
             systemctl --user restart webapp.service
             podman image prune -f
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          GITHUB_SHA: ${{ github.sha }}
 
       - name: Notify Discord
         if: always()

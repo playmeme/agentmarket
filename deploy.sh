@@ -3,6 +3,8 @@
 # NOTE:
 # Currently this isn't used because Github Actions uses .github/workflows/deploy.yml instead
 
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 IMAGE_NAME="webapp-image"
