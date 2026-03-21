@@ -1,17 +1,37 @@
-FROM nginx:alpine
+# ==========================================
+# Stage 1: Build the Go binary
+# ==========================================
+FROM docker.io/golang:1.22-alpine AS builder
 
-# Copy custom nginx config for SPA routing
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+WORKDIR /app
 
-# Copy static site files
-COPY . /usr/share/nginx/html/
+# Copy go mod and sum files if you have them, and download dependencies
+# COPY go.mod go.sum ./
+# RUN go mod download
 
-# Remove the Containerfile and shell scripts from the web root
-RUN rm -f /usr/share/nginx/html/Containerfile \
-          /usr/share/nginx/html/setup.sh \
-          /usr/share/nginx/html/deploy.sh \
-          /usr/share/nginx/html/nginx.conf
+# Copy the rest of the application source code
+COPY . .
 
-EXPOSE 80
+# Build the statically linked Go binary
+# CGO_ENABLED=0 ensures it doesn't rely on host C libraries
+RUN CGO_ENABLED=0 GOOS=linux go build -o static-server .
 
-CMD ["nginx", "-g", "daemon off;"]
+# ==========================================
+# Stage 2: Create the minimal production image
+# ==========================================
+# We use 'scratch' (an empty image) for maximum security and minimal size
+FROM scratch
+
+WORKDIR /app
+
+# Copy the binary from the builder stage
+COPY --from=builder /app/static-server .
+
+# Copy your static files over (adjust the source path if your folder is named differently)
+COPY --from=builder /app/static ./static
+
+# Expose the port your Go app listens on (assuming 8080)
+EXPOSE 8080
+
+# Run the binary
+CMD ["./static-server"]
