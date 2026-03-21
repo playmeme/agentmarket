@@ -1,7 +1,10 @@
 #!/bin/bash
 
+# NOTE:
+# Currently this isn't used because Github Actions uses .github/workflows/deploy.yml instead
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"  # parent of site-agent-built/
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 IMAGE_NAME="webapp-image"
 SERVICE_NAME="webapp.service"
 
@@ -16,7 +19,9 @@ if [ "$LOCAL" != "$REMOTE" ] || [ "$1" == "--force" ]; then
     
     git pull origin main
     podman build -t "$IMAGE_NAME" .    # Use --cgroup-manager if systemd bus issues persist
+    systemctl --user daemon-reload
     systemctl --user restart "$SERVICE_NAME"
+    podman image prune -f
     
     echo "Deployment successful: $(date)"
 else
