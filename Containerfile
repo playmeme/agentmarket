@@ -5,15 +5,17 @@ FROM docker.io/golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-# Copy go mod and sum files if you have them, and download dependencies
 # COPY go.mod go.sum ./
-# RUN go mod download
+COPY go.mod ./
 
-# Copy the rest of the application source code
+# Download dependencies
+RUN go mod download
+
+# Copy the source code AND the static directory
+# This copies everything from your host current dir to /app in the container
 COPY . .
 
 # Build the statically linked Go binary
-# CGO_ENABLED=0 ensures it doesn't rely on host C libraries
 RUN CGO_ENABLED=0 GOOS=linux go build -o static-server .
 
 # ==========================================

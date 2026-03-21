@@ -1,22 +1,29 @@
 package main
 
 import (
-	"log"
-	"net/http"
+    "encoding/json"
+    "log"
+    "net/http"
 )
 
 func main() {
-	// Point to the "static" directory
-	fs := http.FileServer(http.Dir("./static"))
-	
-	// Route all traffic to the file server
-	http.Handle("/", fs)
+    mux := http.NewServeMux()
 
-	log.Println("Starting placeholder server on :8080...")
-	
-	// Listen on port 8080
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+    mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(map[string]string{
+            "status":  "healthy",
+            "service": "static-web-server",
+        })
+    })
+
+    fs := http.FileServer(http.Dir("./static"))
+    mux.Handle("/", fs)
+
+    log.Println("Starting placeholder server on :8080...")
+    err := http.ListenAndServe(":8080", mux)
+    if err != nil {
+        log.Fatal(err)
+    }
 }
