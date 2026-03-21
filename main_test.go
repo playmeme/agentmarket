@@ -7,20 +7,26 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	// Create a request to our health endpoint
-	//req, err := http.NewRequest("GET", "/health", nil)
-	err := http.NewRequest("GET", "/health", nil)
+	router := NewRouter()
+
+	// Check health
+	req, err := http.NewRequest("GET", "/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a ResponseRecorder to record the response
+	// "Serve" the req to the router 
 	rr := httptest.NewRecorder()
-	
-	// We need to test the logic. Since we're using a simple mux, 
-	// we can just call a handler directly if we refactor, 
-	// or just test the server is "testable".
-	if rr.Code = http.StatusOK; rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
+	router.ServeHTTP(rr, req)
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("handler returned wrong status code: got %v want %v",
+			status, http.StatusOK)
+	}
+
+	// Check the response body
+	expected := `{"status":"healthy"}` + "\n"
+	if rr.Body.String() != expected {
+		t.Errorf("handler returned unexpected body: got %v want %v",
+			rr.Body.String(), expected)
 	}
 }

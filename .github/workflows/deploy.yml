@@ -23,14 +23,17 @@ jobs:
         run: go test -v ./...
 
       - name: Deploy to Server
+        if: success()
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: RESEND_API_KEY
+          envs: GITHUB_SHA,RESEND_API_KEY
           script: |
+            SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
+
             cd ~/agentmarket/agentmarket.git
             git pull origin main
 
@@ -40,9 +43,17 @@ jobs:
             EOF
 
             # Build and restart
-            podman build -t localhost/webapp-image .
+            podman build --build-arg VERSION=$SHORT_SHA -t localhost/webapp-image .
             systemctl --user daemon-reload
             systemctl --user restart webapp.service
             podman image prune -f
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+
+      - name: Notify Discord
+        if: always()
+        uses: rjstone/discord-webhook-notify@v1
+        with:
+          severity: ${{ job.status == 'success' && 'info' || 'error' }}
+          details: "Deployment of `${{ github.sha }}` to agentictemp.com: ${{ job.status }}"
+          webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
