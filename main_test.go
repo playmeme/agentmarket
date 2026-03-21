@@ -8,7 +8,8 @@ import (
 
 func TestHealthEndpoint(t *testing.T) {
 	// Create a request to our health endpoint
-	req, err := http.NewRequest("GET", "/health", nil)
+	//req, err := http.NewRequest("GET", "/health", nil)
+	err := http.NewRequest("GET", "/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
