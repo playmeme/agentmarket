@@ -1,5 +1,5 @@
 # Build the Go binary
-FROM golang:1.22-alpine AS builder
+FROM docker.io/golang:1.22-alpine AS builder
 
 ARG VERSION=dev
 
@@ -17,10 +17,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 
 # Make a minimal production image
-FROM alpine:latest
-
-WORKDIR /root/
+FROM scratch
+WORKDIR /app
 COPY --from=builder /app/main .
-COPY --from=builder static ./static
+COPY --from=builder /app/static ./static
 EXPOSE 8080
 CMD ["./main"]
