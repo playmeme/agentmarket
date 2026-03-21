@@ -45,6 +45,8 @@ jobs:
 
             # Build and restart
             podman build --no-cache --build-arg VERSION=$SHORT_SHA -t localhost/webapp-image .
+
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
             systemctl --user daemon-reload
             systemctl --user restart webapp.service
             podman image prune -f
