@@ -23,10 +23,22 @@ func TestHealthEndpoint(t *testing.T) {
 			status, http.StatusOK)
 	}
 
-	// Check the response body
-	expected := `{"status":"healthy"}` + "\n"
-	if rr.Body.String() != expected {
-		t.Errorf("handler returned unexpected body: got %v want %v",
-			rr.Body.String(), expected)
+	// To check the status, need to decode the JSON response
+	var response struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to decode JSON: %v", err)
+	}
+
+	if response.Status != "healthy" {
+		t.Errorf("expected status 'healthy', got '%s'", response.Status)
+	}
+    
+	// This part isn't needed, but whatev...
+	if response.Version == "" {
+		t.Error("expected version to be populated, but it was empty")
 	}
 }
