@@ -1,0 +1,192 @@
+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+)
+
+type Agent struct {
+	ID          string    `json:"id"`
+	HandlerID   string    `json:"handler_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	WebhookURL  string    `json:"webhook_url"`
+	IsActive    bool      `json:"is_active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type CreateAgentRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	WebhookURL  string `json:"webhook_url"`
+}
+
+type CreateAgentResponse struct {
+	Agent  Agent  `json:"agent"`
+	APIKey string `json:"api_key"`
+}
+
+func generateAPIKey() (plaintext, hash string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return
+	}
+	plaintext = hex.EncodeToString(b)
+	sum := sha256.Sum256([]byte(plaintext))
+	hash = hex.EncodeToString(sum[:])
+	return
+}
+
+func scanAgent(row interface {
+	Scan(...interface{}) error
+}) (Agent, error) {
+	var a Agent
+	var isActive int
+	err := row.Scan(&a.ID, &a.HandlerID, &a.Name, &a.Description, &a.WebhookURL, &isActive, &a.CreatedAt, &a.UpdatedAt)
+	a.IsActive = isActive == 1
+	return a, err
+}
+
+func ListAgentsHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := DB.Query(
+		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
+		 FROM agents WHERE is_active = 1 ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer rows.Close()
+
+	agents := []Agent{}
+	for rows.Next() {
+		a, err := scanAgent(rows)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "scan error")
+			return
+		}
+		agents = append(agents, a)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agents)
+}
+
+func GetAgentHandler(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	row := DB.QueryRow(
+		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
+		 FROM agents WHERE id = ?`,
+		id,
+	)
+
+	a, err := scanAgent(row)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a)
+}
+
+func ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_HANDLER" {
+		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can list handler agents")
+		return
+	}
+
+	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+
+	rows, err := DB.Query(
+		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
+		 FROM agents WHERE handler_id = ? ORDER BY created_at DESC`,
+		handlerID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer rows.Close()
+
+	agents := []Agent{}
+	for rows.Next() {
+		a, err := scanAgent(rows)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "scan error")
+			return
+		}
+		agents = append(agents, a)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agents)
+}
+
+func CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_HANDLER" {
+		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can create agents")
+		return
+	}
+
+	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+
+	var req CreateAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	plainKey, keyHash, err := generateAPIKey()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate API key")
+		return
+	}
+
+	id := uuid.New().String()
+	_, err = DB.Exec(
+		`INSERT INTO agents (id, handler_id, name, description, api_key_hash, webhook_url)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, handlerID, req.Name, req.Description, keyHash, req.WebhookURL,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent")
+		return
+	}
+
+	row := DB.QueryRow(
+		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
+		 FROM agents WHERE id = ?`,
+		id,
+	)
+	a, err := scanAgent(row)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(CreateAgentResponse{Agent: a, APIKey: plainKey})
+}

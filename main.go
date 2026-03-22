@@ -1,37 +1,32 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 )
 
 // Version is injected at build time by ldflags
 var Version = "development"
 
-// NewRouter sets up the routes so they can be tested independently
-func NewRouter() http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "healthy",
-			"version": Version,
-		})
-	})
-
-	fs := http.FileServer(http.Dir("./static"))
-	mux.Handle("/", fs)
-
-	return mux
-}
-
 func main() {
+	if err := InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer DB.Close()
+
+	if err := RunMigrations(); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
 	router := NewRouter()
-	log.Printf("Server starting on :8080 (Version: %s)...", Version)
-	if err := http.ListenAndServe(":8080", router); err != nil {
+	log.Printf("Server starting on :%s (Version: %s)...", port, Version)
+	if err := http.ListenAndServe(":"+port, router); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
