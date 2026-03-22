@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -75,6 +76,17 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for duplicate email before attempting insert, to give a clear error message.
+	var existingID string
+	emailErr := DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&existingID)
+	if emailErr == nil {
+		writeError(w, http.StatusConflict, "An account with this email already exists")
+		return
+	} else if emailErr != sql.ErrNoRows {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash password")
@@ -87,7 +99,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		id, req.Role, req.Name, req.Handle, req.Email, string(hash),
 	)
 	if err != nil {
-		writeError(w, http.StatusConflict, "handle or email already exists")
+		writeError(w, http.StatusConflict, "handle already exists")
 		return
 	}
 
