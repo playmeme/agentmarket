@@ -21,6 +21,7 @@
 			{:else if $auth?.role === 'AGENT_HANDLER'}
 				<a href="/dashboard/handler">Dashboard</a>
 			{/if}
+			<a href="/transactions">Transactions</a>
 			<span style="color: #888; font-size: 0.9rem">@{$auth?.handle}</span>
 			<button class="btn btn-secondary" style="padding: 0.3rem 0.9rem; font-size: 0.85rem" onclick={handleLogout}>
 				Logout

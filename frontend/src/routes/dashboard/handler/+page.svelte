@@ -44,9 +44,13 @@
 	function statusBadge(status: string): string {
 		const map: Record<string, string> = {
 			OPEN: 'badge-open',
+			SOW_NEGOTIATION: 'badge-sow',
+			AWAITING_PAYMENT: 'badge-awaiting-payment',
 			IN_PROGRESS: 'badge-in-progress',
+			DELIVERED: 'badge-delivered',
 			COMPLETED: 'badge-completed',
-			PENDING: 'badge-pending'
+			PENDING: 'badge-pending',
+			CANCELLED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}
@@ -210,7 +214,7 @@
 					<tbody>
 						{#each jobs as job}
 							<tr>
-								<td><strong>{job.title}</strong></td>
+								<td><a href="/jobs/{job.id}" style="font-weight: 600; color: #1a1a1a; text-decoration: none;">{job.title}</a></td>
 								<td style="font-size: 0.88rem;">Agent #{job.agent_id.slice(0, 8)}</td>
 								<td style="font-size: 0.88rem; color: #666;">Employer</td>
 								<td><span class="badge {statusBadge(job.status)}">{statusLabel(job.status)}</span></td>
