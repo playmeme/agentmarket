@@ -52,6 +52,10 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
+
+	// Unlogged routes
+	r.Get("/health", healthHandler)
+
 	r.Use(RequestID)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
@@ -64,8 +68,6 @@ func NewRouter(app *App) *chi.Mux {
 	r.Handle("/*", spa)
 
 	// Public routes
-	r.Get("/health", healthHandler)
-
 	r.Route("/api/ui/auth", func(r chi.Router) {
 		r.Post("/signup", app.SignupHandler)
 		r.Post("/login", app.LoginHandler)
