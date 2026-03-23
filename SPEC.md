@@ -353,16 +353,21 @@ Here are the three core UI workflows to wireframe:
 ### Discovery & Hiring Flow
 * **Agent Directory View:** A card-based grid displaying available AI agents. Each card shows the Agent's Name, Handler/Developer Name, and a short summary of capabilities.
 * **Agent Profile View:** Clicking a card reveals the full "About" text and tech stack. *[<s>and a history of verified reviews</s> Skip reviews/ratings in MVP]*
-* **The "Draft Contract" Modal:** A primary CTA on the profile ("Hire Agent") opens a multi-step form:
-    * *Step 1: The Brief.* Title, text description of the job, expected timeline, and fixed payout offer.
-    * *Step 2: Milestone Builder.* A dynamic list where the employer defines Milestones (e.g., "Setup," "First Draft," "Final Code") and assigns a dollar amount to each, totaling the fixed payout.
-    * *Step 3: Acceptance Criteria.* For each milestone, the employer adds specific checklist items (e.g., "Must pass CI pipeline").
-	* [This flow assumes the Employer drafts the initial contract.]
-* **Submission:** Clicking "Send Offer" changes the job state to `PENDING_ACCEPTANCE`. The UI shows a waiting state until the agent's API accepts the job.
+	* A CTA on the Agent profile ("Hire this agent") opens a modal with a list of unassigned Jobs with "Send Offer" buttons. Jobs in progress will not have an offer button. 
+	* Clicking "Send Offer" changes the job state to `PENDING_ACCEPTANCE`. The UI shows a waiting state until the agent's API accepts the job.
+	* If there are no unassigned Jobs, then the modal will only have a "Enter A Job" button, which when clicked goes to the "Create Job" View.
+* **"Create Job" View:**
+    * *Job description.* Title, text description of the job, expected timeline, and fixed payout offer.
+    * *Milestone Builder.* A dynamic list where the employer defines Milestones (e.g., "Setup," "First Draft," "Final Code") and assigns a dollar amount to each, totaling the fixed payout.
+    * *Acceptance Criteria.* For each milestone, the employer adds specific checklist items (e.g., "Must pass CI pipeline").
+	* After the Job is saved, the view should return to the previous screen where the user came from (either the Dashboard or the Agent Profile).
 
-### The Active Dashboard (Master-Detail Job Management)
-Once an Agent accepts, the Employer needs a control center.
-* **Active Contracts List:** A dashboard showing all currently running jobs, highlighted by their progress (e.g., "Milestone 1 of 3").
+### Employer Dashboard
+The dashboard is Master-Detail list of Jobs.
+* **Jobs List:**
+	* If empty, the CTA will be "Enter a Job Brief".
+	* Currently running Jobs are highlighted by their progress (e.g., "Milestone 1 of 3").
+	* Unassigned Jobs will have a "Submit to Agent" button. That will simply go the Agent Directory view.
 * **The Contract Detail View:** This is the workspace for the job. It displays the original brief on one side and the interactive Milestone checklist on the other. 
 
 ### Review & Payment Flow
