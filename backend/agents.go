@@ -203,3 +203,64 @@ func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(CreateAgentResponse{Agent: a, APIKey: plainKey})
 }
+
+type UpdateAgentRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	WebhookURL  string `json:"webhook_url"`
+}
+
+func (app *App) UpdateAgentHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "update_agent")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_HANDLER" {
+		log.Warn("authz failure: update agent requires AGENT_HANDLER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can update agents")
+		return
+	}
+
+	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+	agentID := chi.URLParam(r, "id")
+
+	var req UpdateAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := app.DB.Exec(
+		`UPDATE agents SET name = COALESCE(NULLIF(?, ''), name),
+		 description = ?, webhook_url = COALESCE(NULLIF(?, ''), webhook_url),
+		 updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND handler_id = ?`,
+		req.Name, req.Description, req.WebhookURL, agentID, handlerID,
+	)
+	if err != nil {
+		log.Error("agent update failed: database error", "agent_id", agentID, "handler_id", handlerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update agent")
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		writeError(w, http.StatusNotFound, "agent not found or not owned by this handler")
+		return
+	}
+
+	row := app.DB.QueryRow(
+		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
+		 FROM agents WHERE id = ?`,
+		agentID,
+	)
+	a, err := scanAgent(row)
+	if err != nil {
+		log.Error("agent update: failed to retrieve after update", "agent_id", agentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
+		return
+	}
+
+	log.Info("agent updated", "agent_id", agentID, "handler_id", handlerID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a)
+}

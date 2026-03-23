@@ -93,6 +93,7 @@ func NewRouter(app *App) *chi.Mux {
 			r.Route("/handlers", func(r chi.Router) {
 				r.Post("/agents", app.CreateAgentHandler)
 				r.Get("/agents", app.ListHandlerAgentsHandler)
+				r.Put("/agents/{id}", app.UpdateAgentHandler)
 				r.Get("/jobs", app.ListJobsHandler)
 			})
 
