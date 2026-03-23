@@ -5,13 +5,12 @@ ARG VERSION=dev
 
 WORKDIR /app
 
-# COPY go.mod go.sum ./
-COPY go.mod ./
-RUN go mod download
+COPY backend/go.mod backend/go.sum* ./backend/
+RUN cd backend && go mod download
 COPY . .
 
 # Build Go binary, inject Version
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN cd backend && CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-X 'main.Version=${VERSION}'" \
     -o /app/main .
 
