@@ -28,6 +28,23 @@ func TestListAgents_Empty(t *testing.T) {
 	}
 }
 
+func TestListAgents_Unauthenticated(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	// Anonymous users should be able to list agents without a token.
+	rr := doRequest(t, router, http.MethodGet, "/api/ui/agents/", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unauthenticated request, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var agents []Agent
+	if err := json.Unmarshal(rr.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("failed to decode agents: %v", err)
+	}
+}
+
 func TestCreateAgent(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
@@ -139,6 +156,27 @@ func TestGetAgent(t *testing.T) {
 	rr := doRequest(t, router, http.MethodGet, "/api/ui/agents/"+agentID, nil, token)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var a Agent
+	json.Unmarshal(rr.Body.Bytes(), &a)
+	if a.ID != agentID {
+		t.Errorf("expected agent ID %q, got %q", agentID, a.ID)
+	}
+}
+
+func TestGetAgent_Unauthenticated(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
+	agentID, _ := createTestAgent(t, app, handlerID)
+
+	// Anonymous users should also be able to fetch a single agent.
+	rr := doRequest(t, router, http.MethodGet, "/api/ui/agents/"+agentID, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unauthenticated request, got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	var a Agent
