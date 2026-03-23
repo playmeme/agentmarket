@@ -13,7 +13,7 @@
 
 <nav>
 	<div class="nav-inner">
-		<a class="brand" href="/">AgentMarket</a>
+		<a class="brand" href="/">Agentic Temp Market</a>
 		<a href="/">Agents</a>
 		{#if $isAuthenticated}
 			{#if $auth?.role === 'EMPLOYER'}
