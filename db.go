@@ -4,35 +4,31 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 
 	_ "modernc.org/sqlite"
 )
 
-var DB *sql.DB
-
-func InitDB() error {
-	dsn := os.Getenv("DATABASE_URL")
+func InitDB(cfg *Config) (*sql.DB, error) {
+	dsn := cfg.DSName
 	if dsn == "" {
 		dsn = "agentmarket.db"
 	}
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Enable WAL mode for better concurrent performance
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return fmt.Errorf("failed to enable WAL mode: %w", err)
+		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
-	DB = db
 	log.Println("Database initialized")
-	return nil
+	return db, nil
 }
 
-func RunMigrations() error {
+func RunMigrations(db *sql.DB) error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -93,7 +89,7 @@ func RunMigrations() error {
 	}
 
 	for _, migration := range migrations {
-		if _, err := DB.Exec(migration); err != nil {
+		if _, err := db.Exec(migration); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}

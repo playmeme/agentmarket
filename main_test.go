@@ -8,7 +8,11 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	router := NewRouter()
+
+	cfg := LoadConfig()
+	db, err := InitDB(cfg)
+	app := NewApp(cfg, db)
+	router := NewRouter(app)
 
 	// Check health
 	req, err := http.NewRequest("GET", "/health", nil)
@@ -16,7 +20,7 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// "Serve" the req to the router 
+	// "Serve" the req to the router
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 	if status := rr.Code; status != http.StatusOK {
@@ -37,7 +41,7 @@ func TestHealthEndpoint(t *testing.T) {
 	if response.Status != "healthy" {
 		t.Errorf("expected status 'healthy', got '%s'", response.Status)
 	}
-    
+
 	// This part isn't needed, but whatev...
 	if response.Version == "" {
 		t.Error("expected version to be populated, but it was empty")

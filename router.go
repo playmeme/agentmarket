@@ -8,7 +8,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
-func NewRouter() *chi.Mux {
+func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
@@ -20,49 +20,49 @@ func NewRouter() *chi.Mux {
 	r.Get("/health", healthHandler)
 
 	r.Route("/api/ui/auth", func(r chi.Router) {
-		r.Post("/signup", SignupHandler)
-		r.Post("/login", LoginHandler)
-		r.Post("/verify-email", VerifyEmailHandler)
-		r.Post("/forgot-password", ForgotPasswordHandler)
-		r.Post("/reset-password", ResetPasswordHandler)
+		r.Post("/signup", app.SignupHandler)
+		r.Post("/login", app.LoginHandler)
+		r.Post("/verify-email", app.VerifyEmailHandler)
+		r.Post("/forgot-password", app.ForgotPasswordHandler)
+		r.Post("/reset-password", app.ResetPasswordHandler)
 	})
 
 	// JWT-protected UI routes
 	r.Route("/api/ui", func(r chi.Router) {
-		r.Use(JWTAuth)
+		r.Use(app.JWTAuth)
 
 		r.Route("/agents", func(r chi.Router) {
-			r.Get("/", ListAgentsHandler)
-			r.Get("/{id}", GetAgentHandler)
+			r.Get("/", app.ListAgentsHandler)
+			r.Get("/{id}", app.GetAgentHandler)
 		})
 
 		r.Route("/handlers", func(r chi.Router) {
-			r.Post("/agents", CreateAgentHandler)
-			r.Get("/agents", ListHandlerAgentsHandler)
-			r.Get("/jobs", ListJobsHandler)
+			r.Post("/agents", app.CreateAgentHandler)
+			r.Get("/agents", app.ListHandlerAgentsHandler)
+			r.Get("/jobs", app.ListJobsHandler)
 		})
 
 		// Singular aliases for frontend compatibility
 		r.Route("/handler", func(r chi.Router) {
-			r.Get("/agents", ListHandlerAgentsHandler)
-			r.Get("/jobs", ListJobsHandler)
+			r.Get("/agents", app.ListHandlerAgentsHandler)
+			r.Get("/jobs", app.ListJobsHandler)
 		})
 
 		r.Route("/jobs", func(r chi.Router) {
-			r.Post("/hire", HireAgentHandler)
-			r.Get("/", ListJobsHandler)
-			r.Get("/{id}", GetJobHandler)
-			r.Post("/{job_id}/milestones/{milestone_id}/approve", ApproveMilestoneHandler)
+			r.Post("/hire", app.HireAgentHandler)
+			r.Get("/", app.ListJobsHandler)
+			r.Get("/{id}", app.GetJobHandler)
+			r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
 		})
 	})
 
 	// API key protected agent routes
 	r.Route("/api/v1/jobs", func(r chi.Router) {
-		r.Use(APIKeyAuth)
-		r.Get("/pending", GetPendingJobsHandler)
-		r.Post("/{job_id}/accept", AcceptJobHandler)
-		r.Post("/{job_id}/decline", DeclineJobHandler)
-		r.Post("/{job_id}/milestones/{milestone_id}/submit", SubmitMilestoneHandler)
+		r.Use(app.APIKeyAuth)
+		r.Get("/pending", app.GetPendingJobsHandler)
+		r.Post("/{job_id}/accept", app.AcceptJobHandler)
+		r.Post("/{job_id}/decline", app.DeclineJobHandler)
+		r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
 	})
 
 	return r

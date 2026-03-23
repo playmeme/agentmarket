@@ -21,17 +21,17 @@ type Criterion struct {
 }
 
 type Milestone struct {
-	ID                 string      `json:"id"`
-	JobID              string      `json:"job_id"`
-	Title              string      `json:"title"`
-	Amount             int64       `json:"amount"`
-	OrderIndex         int         `json:"order_index"`
-	Status             string      `json:"status"`
-	ProofOfWorkURL     string      `json:"proof_of_work_url"`
-	ProofOfWorkNotes   string      `json:"proof_of_work_notes"`
-	CreatedAt          time.Time   `json:"created_at"`
-	UpdatedAt          time.Time   `json:"updated_at"`
-	Criteria           []Criterion `json:"criteria,omitempty"`
+	ID               string      `json:"id"`
+	JobID            string      `json:"job_id"`
+	Title            string      `json:"title"`
+	Amount           int64       `json:"amount"`
+	OrderIndex       int         `json:"order_index"`
+	Status           string      `json:"status"`
+	ProofOfWorkURL   string      `json:"proof_of_work_url"`
+	ProofOfWorkNotes string      `json:"proof_of_work_notes"`
+	CreatedAt        time.Time   `json:"created_at"`
+	UpdatedAt        time.Time   `json:"updated_at"`
+	Criteria         []Criterion `json:"criteria,omitempty"`
 }
 
 type Job struct {
@@ -73,8 +73,8 @@ type SubmitProofRequest struct {
 
 // --- Helpers ---
 
-func loadCriteriaForMilestone(milestoneID string) ([]Criterion, error) {
-	rows, err := DB.Query(
+func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error) {
+	rows, err := app.DB.Query(
 		`SELECT id, milestone_id, description, is_verified, created_at FROM criteria WHERE milestone_id = ? ORDER BY rowid`,
 		milestoneID,
 	)
@@ -99,8 +99,8 @@ func loadCriteriaForMilestone(milestoneID string) ([]Criterion, error) {
 	return criteria, nil
 }
 
-func loadMilestonesForJob(jobID string) ([]Milestone, error) {
-	rows, err := DB.Query(
+func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
+	rows, err := app.DB.Query(
 		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE job_id = ? ORDER BY order_index`,
 		jobID,
@@ -117,7 +117,7 @@ func loadMilestonesForJob(jobID string) ([]Milestone, error) {
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
-		criteria, err := loadCriteriaForMilestone(m.ID)
+		criteria, err := app.loadCriteriaForMilestone(m.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,7 @@ func loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	return milestones, nil
 }
 
-func scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
+func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
 	var stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
@@ -143,7 +143,7 @@ func scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 
 // --- UI Handlers ---
 
-func HireAgentHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "EMPLOYER" {
 		writeError(w, http.StatusForbidden, "only EMPLOYER role can hire agents")
@@ -154,7 +154,7 @@ func HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Enforce email verification before hiring
 	var emailVerifiedAt sql.NullTime
-	err := DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
+	err := app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
@@ -177,13 +177,13 @@ func HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Verify agent exists and is active
 	var agentExists int
-	err = DB.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ? AND is_active = 1", req.AgentID).Scan(&agentExists)
+	err = app.DB.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ? AND is_active = 1", req.AgentID).Scan(&agentExists)
 	if err != nil || agentExists == 0 {
 		writeError(w, http.StatusNotFound, "agent not found or inactive")
 		return
 	}
 
-	tx, err := DB.Begin()
+	tx, err := app.DB.Begin()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
 		return
@@ -230,7 +230,7 @@ func HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := getJobDetail(jobID)
+	job, err := app.getJobDetail(jobID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
@@ -241,7 +241,7 @@ func HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(job)
 }
 
-func ListJobsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 
@@ -249,14 +249,14 @@ func ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if role == "EMPLOYER" {
-		rows, err = DB.Query(
+		rows, err = app.DB.Query(
 			`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
 			 FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`,
 			userID,
 		)
 	} else {
 		// AGENT_HANDLER: list jobs for any of their agents
-		rows, err = DB.Query(
+		rows, err = app.DB.Query(
 			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
@@ -274,7 +274,7 @@ func ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobs := []Job{}
 	for rows.Next() {
-		j, err := scanJob(rows)
+		j, err := app.scanJob(rows)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
@@ -286,18 +286,18 @@ func ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jobs)
 }
 
-func getJobDetail(jobID string) (Job, error) {
-	row := DB.QueryRow(
+func (app *App) getJobDetail(jobID string) (Job, error) {
+	row := app.DB.QueryRow(
 		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
 		 FROM jobs WHERE id = ?`,
 		jobID,
 	)
-	j, err := scanJob(row)
+	j, err := app.scanJob(row)
 	if err != nil {
 		return j, err
 	}
 
-	milestones, err := loadMilestonesForJob(jobID)
+	milestones, err := app.loadMilestonesForJob(jobID)
 	if err != nil {
 		return j, err
 	}
@@ -305,10 +305,10 @@ func getJobDetail(jobID string) (Job, error) {
 	return j, nil
 }
 
-func GetJobHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) GetJobHandler(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 
-	j, err := getJobDetail(jobID)
+	j, err := app.getJobDetail(jobID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -322,7 +322,7 @@ func GetJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-func ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "EMPLOYER" {
 		writeError(w, http.StatusForbidden, "only EMPLOYER can approve milestones")
@@ -335,13 +335,13 @@ func ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the job belongs to this employer
 	var count int
-	err := DB.QueryRow("SELECT COUNT(*) FROM jobs WHERE id = ? AND employer_id = ?", jobID, employerID).Scan(&count)
+	err := app.DB.QueryRow("SELECT COUNT(*) FROM jobs WHERE id = ? AND employer_id = ?", jobID, employerID).Scan(&count)
 	if err != nil || count == 0 {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
 
-	result, err := DB.Exec(
+	result, err := app.DB.Exec(
 		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND job_id = ? AND status = 'REVIEW_REQUESTED'`,
 		milestoneID, jobID,
@@ -358,7 +358,7 @@ func ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var m Milestone
-	row := DB.QueryRow(
+	row := app.DB.QueryRow(
 		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
@@ -375,10 +375,10 @@ func ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Agent API (API key auth) ---
 
-func GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 
-	rows, err := DB.Query(
+	rows, err := app.DB.Query(
 		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
 		 FROM jobs WHERE agent_id = ? AND status = 'PENDING_ACCEPTANCE' ORDER BY created_at DESC`,
 		agentID,
@@ -391,7 +391,7 @@ func GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobs := []Job{}
 	for rows.Next() {
-		j, err := scanJob(rows)
+		j, err := app.scanJob(rows)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
@@ -403,11 +403,11 @@ func GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(jobs)
 }
 
-func AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	result, err := DB.Exec(
+	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, agentID,
@@ -423,7 +423,7 @@ func AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j, err := getJobDetail(jobID)
+	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
@@ -433,11 +433,11 @@ func AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-func DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	result, err := DB.Exec(
+	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, agentID,
@@ -453,7 +453,7 @@ func DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	j, err := getJobDetail(jobID)
+	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
@@ -463,14 +463,14 @@ func DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-func SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 	milestoneID := chi.URLParam(r, "milestone_id")
 
 	// Verify job belongs to this agent and is IN_PROGRESS
 	var count int
-	err := DB.QueryRow(
+	err := app.DB.QueryRow(
 		"SELECT COUNT(*) FROM jobs WHERE id = ? AND agent_id = ? AND status = 'IN_PROGRESS'",
 		jobID, agentID,
 	).Scan(&count)
@@ -485,7 +485,7 @@ func SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := DB.Exec(
+	result, err := app.DB.Exec(
 		`UPDATE milestones SET status = 'REVIEW_REQUESTED', proof_of_work_url = ?, proof_of_work_notes = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND job_id = ? AND status = 'PENDING'`,
 		req.ProofOfWorkURL, req.ProofOfWorkNotes, milestoneID, jobID,
@@ -502,7 +502,7 @@ func SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var m Milestone
-	row := DB.QueryRow(
+	row := app.DB.QueryRow(
 		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,

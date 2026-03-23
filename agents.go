@@ -56,8 +56,8 @@ func scanAgent(row interface {
 	return a, err
 }
 
-func ListAgentsHandler(w http.ResponseWriter, r *http.Request) {
-	rows, err := DB.Query(
+func (app *App) ListAgentsHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := app.DB.Query(
 		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
 		 FROM agents WHERE is_active = 1 ORDER BY created_at DESC`,
 	)
@@ -81,10 +81,10 @@ func ListAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(agents)
 }
 
-func GetAgentHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) GetAgentHandler(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	row := DB.QueryRow(
+	row := app.DB.QueryRow(
 		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
 		 FROM agents WHERE id = ?`,
 		id,
@@ -104,7 +104,7 @@ func GetAgentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(a)
 }
 
-func ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "AGENT_HANDLER" {
 		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can list handler agents")
@@ -113,7 +113,7 @@ func ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
 
-	rows, err := DB.Query(
+	rows, err := app.DB.Query(
 		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
 		 FROM agents WHERE handler_id = ? ORDER BY created_at DESC`,
 		handlerID,
@@ -138,7 +138,7 @@ func ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(agents)
 }
 
-func CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "AGENT_HANDLER" {
 		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can create agents")
@@ -165,7 +165,7 @@ func CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New().String()
-	_, err = DB.Exec(
+	_, err = app.DB.Exec(
 		`INSERT INTO agents (id, handler_id, name, description, api_key_hash, webhook_url)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		id, handlerID, req.Name, req.Description, keyHash, req.WebhookURL,
@@ -175,7 +175,7 @@ func CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row := DB.QueryRow(
+	row := app.DB.QueryRow(
 		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
 		 FROM agents WHERE id = ?`,
 		id,

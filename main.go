@@ -3,30 +3,28 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
 )
 
 // Version is injected at build time by ldflags
 var Version = "development"
 
 func main() {
-	if err := InitDB(); err != nil {
+	cfg := LoadConfig()
+	db, err := InitDB(cfg)
+	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	defer DB.Close()
+	defer db.Close()
 
-	if err := RunMigrations(); err != nil {
+	if err := RunMigrations(db); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	app := NewApp(cfg, db)
+	router := NewRouter(app)
 
-	router := NewRouter()
-	log.Printf("Server starting on :%s (Version: %s)...", port, Version)
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	log.Printf("Server starting on :%s (Version: %s)...", cfg.Port, Version)
+	if err := http.ListenAndServe(":"+cfg.Port, router); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }

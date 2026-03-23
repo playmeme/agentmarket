@@ -47,7 +47,7 @@ type AuthResponse struct {
 	Email  string `json:"email"`
 }
 
-func generateJWT(userID, role string) (string, error) {
+func (app *App) generateJWT(userID, role string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"role":    role,
@@ -56,10 +56,10 @@ func generateJWT(userID, role string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(getJWTSecret())
+	return token.SignedString(app.Config.JWTSecret)
 }
 
-func SignupHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -78,7 +78,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Check for duplicate email before attempting insert, to give a clear error message.
 	var existingID string
-	emailErr := DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&existingID)
+	emailErr := app.DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&existingID)
 	if emailErr == nil {
 		writeError(w, http.StatusConflict, "An account with this email already exists")
 		return
@@ -94,7 +94,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New().String()
-	_, err = DB.Exec(
+	_, err = app.DB.Exec(
 		`INSERT INTO users (id, role, name, handle, email, password_hash) VALUES (?, ?, ?, ?, ?, ?)`,
 		id, req.Role, req.Name, req.Handle, req.Email, string(hash),
 	)
@@ -103,7 +103,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := generateJWT(id, req.Role)
+	token, err := app.generateJWT(id, req.Role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
@@ -113,7 +113,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	verifyLink := "https://agentictemp.com/auth/verify-email?token=" + token
 	htmlBody := "<p>Welcome to AgentMarket! Please verify your email by clicking the link below:</p>" +
 		"<p><a href=\"" + verifyLink + "\">Verify Email</a></p>"
-	_ = SendEmail(req.Email, "Verify your AgentMarket email", htmlBody)
+	_ = SendEmail(app.Config.ResendAPIKey, req.Email, "Verify your AgentMarket email", htmlBody)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -128,7 +128,7 @@ func SignupHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -141,7 +141,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id, role, passwordHash, name, handle, email string
-	err := DB.QueryRow(
+	err := app.DB.QueryRow(
 		"SELECT id, role, password_hash, name, handle, email FROM users WHERE email = ?",
 		req.Email,
 	).Scan(&id, &role, &passwordHash, &name, &handle, &email)
@@ -155,7 +155,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := generateJWT(id, role)
+	token, err := app.generateJWT(id, role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
@@ -173,7 +173,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract JWT from Authorization header to identify the user
 	var req VerifyEmailRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -191,7 +191,7 @@ func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
-		return getJWTSecret(), nil
+		return app.Config.JWTSecret, nil
 	})
 	if err != nil || !token.Valid {
 		writeError(w, http.StatusUnauthorized, "invalid or expired token")
@@ -210,7 +210,7 @@ func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = DB.Exec(
+	_, err = app.DB.Exec(
 		"UPDATE users SET email_verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		userID,
 	)
@@ -223,7 +223,7 @@ func VerifyEmailHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "email verified"})
 }
 
-func generatePasswordResetJWT(userID string) (string, error) {
+func (app *App) generatePasswordResetJWT(userID string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"purpose": "password_reset",
@@ -231,10 +231,10 @@ func generatePasswordResetJWT(userID string) (string, error) {
 		"iat":     time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(getJWTSecret())
+	return token.SignedString(app.Config.JWTSecret)
 }
 
-func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req ForgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -246,7 +246,7 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userID string
-	err := DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&userID)
+	err := app.DB.QueryRow("SELECT id FROM users WHERE email = ?", req.Email).Scan(&userID)
 	// Always return success to avoid leaking which emails are registered
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -254,7 +254,7 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resetToken, err := generatePasswordResetJWT(userID)
+	resetToken, err := app.generatePasswordResetJWT(userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to generate reset token")
 		return
@@ -264,13 +264,13 @@ func ForgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	htmlBody := "<p>You requested a password reset for your AgentMarket account.</p>" +
 		"<p><a href=\"" + resetLink + "\">Reset Password</a></p>" +
 		"<p>This link expires in 1 hour. If you did not request this, you can ignore this email.</p>"
-	_ = SendEmail(req.Email, "Reset your AgentMarket password", htmlBody)
+	_ = SendEmail(app.Config.ResendAPIKey, req.Email, "Reset your AgentMarket password", htmlBody)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "if that email exists, a reset link has been sent"})
 }
 
-func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+func (app *App) ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	var req ResetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -285,7 +285,7 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
-		return getJWTSecret(), nil
+		return app.Config.JWTSecret, nil
 	})
 	if err != nil || !token.Valid {
 		writeError(w, http.StatusUnauthorized, "invalid or expired token")
@@ -316,7 +316,7 @@ func ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = DB.Exec(
+	_, err = app.DB.Exec(
 		"UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		string(hash), userID,
 	)

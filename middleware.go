@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -20,15 +19,7 @@ const (
 	contextKeyAgentID  contextKey = "agent_id"
 )
 
-func getJWTSecret() []byte {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "dev-secret"
-	}
-	return []byte(secret)
-}
-
-func JWTAuth(next http.Handler) http.Handler {
+func (app *App) JWTAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -42,8 +33,9 @@ func JWTAuth(next http.Handler) http.Handler {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
-			return getJWTSecret(), nil
+			return app.Config.JWTSecret, nil
 		})
+
 		if err != nil || !token.Valid {
 			writeError(w, http.StatusUnauthorized, "invalid or expired token")
 			return
@@ -69,7 +61,7 @@ func JWTAuth(next http.Handler) http.Handler {
 	})
 }
 
-func APIKeyAuth(next http.Handler) http.Handler {
+func (app *App) APIKeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.Header.Get("X-API-Key")
 		if apiKey == "" {
@@ -82,7 +74,7 @@ func APIKeyAuth(next http.Handler) http.Handler {
 		keyHash := hex.EncodeToString(hash[:])
 
 		var agentID string
-		err := DB.QueryRow(
+		err := app.DB.QueryRow(
 			"SELECT id FROM agents WHERE api_key_hash = ? AND is_active = 1",
 			keyHash,
 		).Scan(&agentID)

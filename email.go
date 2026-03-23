@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 )
 
 type resendEmailRequest struct {
@@ -16,10 +15,9 @@ type resendEmailRequest struct {
 }
 
 // SendEmail sends an email via the Resend API.
-func SendEmail(to, subject, htmlBody string) error {
-	apiKey := os.Getenv("RESEND_API_KEY")
+func SendEmail(apiKey, to, subject, htmlBody string) error {
 	if apiKey == "" {
-		return fmt.Errorf("RESEND_API_KEY not set")
+		return fmt.Errorf("RESEND_API_KEY not configured")
 	}
 
 	payload := resendEmailRequest{
