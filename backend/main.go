@@ -2,13 +2,17 @@ package main
 
 import (
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 )
 
 // Version is injected at build time by ldflags
 var Version = "development"
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	cfg := LoadConfig()
 	db, err := InitDB(cfg)
 	if err != nil {
@@ -23,7 +27,7 @@ func main() {
 	app := NewApp(cfg, db)
 	router := NewRouter(app)
 
-	log.Printf("Server starting on :%s (Version: %s)...", cfg.Port, Version)
+	slog.Info("server starting", "port", cfg.Port, "version", Version)
 	if err := http.ListenAndServe(":"+cfg.Port, router); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

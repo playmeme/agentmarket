@@ -3,7 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,7 +24,7 @@ func InitDB(cfg *Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
-	log.Println("Database initialized")
+	slog.Info("database initialized", "dsn", dsn)
 	return db, nil
 }
 
@@ -94,6 +94,6 @@ func RunMigrations(db *sql.DB) error {
 		}
 	}
 
-	log.Println("Migrations complete")
+	slog.Info("migrations complete")
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
+	r.Use(RequestID)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 

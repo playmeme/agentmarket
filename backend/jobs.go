@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -144,8 +145,11 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 // --- UI Handlers ---
 
 func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "hire_agent")
+
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "EMPLOYER" {
+		log.Warn("authz failure: hire agent requires EMPLOYER role", "role", role)
 		writeError(w, http.StatusForbidden, "only EMPLOYER role can hire agents")
 		return
 	}
@@ -156,10 +160,12 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	var emailVerifiedAt sql.NullTime
 	err := app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
 	if err != nil {
+		log.Error("hire agent: database error checking email verification", "employer_id", employerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 	if !emailVerifiedAt.Valid {
+		log.Warn("hire agent blocked: employer email not verified", "employer_id", employerID)
 		writeError(w, http.StatusForbidden, "Please verify your email before hiring agents")
 		return
 	}
@@ -185,6 +191,7 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := app.DB.Begin()
 	if err != nil {
+		log.Error("job creation failed: begin transaction error", "employer_id", employerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
 		return
 	}
@@ -197,6 +204,7 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		jobID, employerID, req.AgentID, req.Title, req.Description, req.TotalPayout, req.TimelineDays,
 	)
 	if err != nil {
+		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
@@ -208,6 +216,7 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 			msID, jobID, ms.Title, ms.Amount, i,
 		)
 		if err != nil {
+			log.Error("job creation failed: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to create milestone")
 			return
 		}
@@ -219,6 +228,7 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 				cID, msID, criteriaDesc,
 			)
 			if err != nil {
+				log.Error("job creation failed: criteria insert error", "milestone_id", msID, "error", err)
 				writeError(w, http.StatusInternalServerError, "failed to create criteria")
 				return
 			}
@@ -226,12 +236,23 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(); err != nil {
+		log.Error("job creation failed: commit error", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 		return
 	}
 
+	log.Info("job created",
+		"job_id", jobID,
+		"employer_id", employerID,
+		"agent_id", req.AgentID,
+		"title", req.Title,
+		"total_payout", req.TotalPayout,
+		"milestones", len(req.Milestones),
+	)
+
 	job, err := app.getJobDetail(jobID)
 	if err != nil {
+		log.Error("job creation: failed to retrieve after insert", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
@@ -323,8 +344,11 @@ func (app *App) GetJobHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "approve_milestone")
+
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "EMPLOYER" {
+		log.Warn("authz failure: approve milestone requires EMPLOYER role", "role", role)
 		writeError(w, http.StatusForbidden, "only EMPLOYER can approve milestones")
 		return
 	}
@@ -347,6 +371,7 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		milestoneID, jobID,
 	)
 	if err != nil {
+		log.Error("milestone approval failed: database error", "job_id", jobID, "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -357,6 +382,8 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	log.Info("milestone approved", "job_id", jobID, "milestone_id", milestoneID, "employer_id", employerID)
+
 	var m Milestone
 	row := app.DB.QueryRow(
 		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
@@ -365,6 +392,7 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 	)
 	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
 	}
@@ -404,6 +432,8 @@ func (app *App) GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "accept_job")
+
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
@@ -413,6 +443,7 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		jobID, agentID,
 	)
 	if err != nil {
+		log.Error("job accept failed: database error", "job_id", jobID, "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -423,8 +454,11 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Info("job accepted", "job_id", jobID, "agent_id", agentID)
+
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
+		log.Error("job accept: failed to retrieve after update", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
@@ -434,6 +468,8 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "decline_job")
+
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
@@ -443,6 +479,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 		jobID, agentID,
 	)
 	if err != nil {
+		log.Error("job decline failed: database error", "job_id", jobID, "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -453,8 +490,11 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Info("job declined", "job_id", jobID, "agent_id", agentID)
+
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
+		log.Error("job decline: failed to retrieve after update", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
@@ -464,6 +504,8 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "submit_milestone")
+
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 	milestoneID := chi.URLParam(r, "milestone_id")
@@ -491,6 +533,7 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		req.ProofOfWorkURL, req.ProofOfWorkNotes, milestoneID, jobID,
 	)
 	if err != nil {
+		log.Error("milestone submit failed: database error", "job_id", jobID, "milestone_id", milestoneID, "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -501,6 +544,13 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Info("milestone submitted for review",
+		"job_id", jobID,
+		"milestone_id", milestoneID,
+		"agent_id", agentID,
+		"proof_url", req.ProofOfWorkURL,
+	)
+
 	var m Milestone
 	row := app.DB.QueryRow(
 		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
@@ -509,6 +559,7 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		log.Error("milestone submit: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
 	}

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -14,15 +16,41 @@ import (
 type contextKey string
 
 const (
-	contextKeyUserID   contextKey = "user_id"
-	contextKeyUserRole contextKey = "user_role"
-	contextKeyAgentID  contextKey = "agent_id"
+	contextKeyUserID    contextKey = "user_id"
+	contextKeyUserRole  contextKey = "user_role"
+	contextKeyAgentID   contextKey = "agent_id"
+	contextKeyRequestID contextKey = "request_id"
 )
+
+// RequestID generates a unique ID for each request and stores it in the context.
+func RequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			// fallback: empty string still works, just less useful
+			next.ServeHTTP(w, r)
+			return
+		}
+		id := hex.EncodeToString(b)
+		ctx := context.WithValue(r.Context(), contextKeyRequestID, id)
+		w.Header().Set("X-Request-ID", id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func requestID(ctx context.Context) string {
+	id, _ := ctx.Value(contextKeyRequestID).(string)
+	return id
+}
 
 func (app *App) JWTAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			slog.Warn("jwt auth failed: missing or invalid header",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+			)
 			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 			return
 		}
@@ -37,12 +65,21 @@ func (app *App) JWTAuth(next http.Handler) http.Handler {
 		})
 
 		if err != nil || !token.Valid {
+			slog.Warn("jwt auth failed: invalid or expired token",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+				"error", err,
+			)
 			writeError(w, http.StatusUnauthorized, "invalid or expired token")
 			return
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
+			slog.Warn("jwt auth failed: invalid claims",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+			)
 			writeError(w, http.StatusUnauthorized, "invalid token claims")
 			return
 		}
@@ -51,6 +88,10 @@ func (app *App) JWTAuth(next http.Handler) http.Handler {
 		userRole, _ := claims["role"].(string)
 
 		if userID == "" {
+			slog.Warn("jwt auth failed: missing user_id in claims",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+			)
 			writeError(w, http.StatusUnauthorized, "invalid token: missing user_id")
 			return
 		}
@@ -65,6 +106,10 @@ func (app *App) APIKeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			slog.Warn("api key auth failed: missing or invalid header",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+			)
 			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 			return
 		}
@@ -82,10 +127,19 @@ func (app *App) APIKeyAuth(next http.Handler) http.Handler {
 		).Scan(&agentID)
 
 		if err == sql.ErrNoRows {
+			slog.Warn("api key auth failed: key not found or inactive",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+			)
 			writeError(w, http.StatusUnauthorized, "invalid API key")
 			return
 		}
 		if err != nil {
+			slog.Error("api key auth: database error",
+				"request_id", requestID(r.Context()),
+				"path", r.URL.Path,
+				"error", err,
+			)
 			writeError(w, http.StatusInternalServerError, "database error")
 			return
 		}

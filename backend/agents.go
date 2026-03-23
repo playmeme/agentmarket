@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -107,6 +108,10 @@ func (app *App) GetAgentHandler(w http.ResponseWriter, r *http.Request) {
 func (app *App) ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request) {
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "AGENT_HANDLER" {
+		slog.Warn("authz failure: list handler agents requires AGENT_HANDLER role",
+			"request_id", requestID(r.Context()),
+			"role", role,
+		)
 		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can list handler agents")
 		return
 	}
@@ -139,8 +144,11 @@ func (app *App) ListHandlerAgentsHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "create_agent")
+
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 	if role != "AGENT_HANDLER" {
+		log.Warn("authz failure: create agent requires AGENT_HANDLER role", "role", role)
 		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can create agents")
 		return
 	}
@@ -160,6 +168,7 @@ func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	plainKey, keyHash, err := generateAPIKey()
 	if err != nil {
+		log.Error("agent creation failed: api key generation error", "handler_id", handlerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to generate API key")
 		return
 	}
@@ -171,9 +180,12 @@ func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 		id, handlerID, req.Name, req.Description, keyHash, req.WebhookURL,
 	)
 	if err != nil {
+		log.Error("agent creation failed: database error", "handler_id", handlerID, "name", req.Name, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create agent")
 		return
 	}
+
+	log.Info("agent created, api key issued", "agent_id", id, "handler_id", handlerID, "name", req.Name)
 
 	row := app.DB.QueryRow(
 		`SELECT id, handler_id, name, description, webhook_url, is_active, created_at, updated_at
@@ -182,6 +194,7 @@ func (app *App) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	a, err := scanAgent(row)
 	if err != nil {
+		log.Error("agent creation: failed to retrieve after insert", "agent_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
 		return
 	}

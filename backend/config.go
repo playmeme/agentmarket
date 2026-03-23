@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"log/slog"
 	"os"
 )
@@ -21,19 +20,22 @@ func LoadConfig() *Config {
 
 	dsName := os.Getenv("DATABASE_URL")
 	if dsName == "" {
-		slog.Warn("WARN: DATABASE_URL env var is missing from config")
+		slog.Warn("DATABASE_URL not set, using default", "default", "agentmarket.db")
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		log.Fatal("FATAL: JWT_SECRET env var is missing from config")
+		slog.Error("JWT_SECRET env var is required but not set")
+		os.Exit(1)
 	}
 
 	resendApiKey := os.Getenv("RESEND_API_KEY")
 	if resendApiKey == "" {
-		log.Fatal("FATAL: RESEND_API_KEY env var is missing from config")
+		slog.Error("RESEND_API_KEY env var is required but not set")
+		os.Exit(1)
 	}
 
+	slog.Info("config loaded", "port", port, "database_url_set", dsName != "")
 	return &Config{
 		Port:         port,
 		DSName:       dsName,
