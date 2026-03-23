@@ -150,8 +150,8 @@ func TestAcceptJob(t *testing.T) {
 
 	var updated Job
 	json.Unmarshal(rr.Body.Bytes(), &updated)
-	if updated.Status != "IN_PROGRESS" {
-		t.Errorf("expected status IN_PROGRESS, got %q", updated.Status)
+	if updated.Status != "SOW_NEGOTIATION" {
+		t.Errorf("expected status SOW_NEGOTIATION, got %q", updated.Status)
 	}
 }
 
