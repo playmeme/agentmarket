@@ -9,6 +9,9 @@ import (
 
 func TestHealthEndpoint(t *testing.T) {
 
+	t.Setenv("JWT_SECRET", "secret_for_test")
+	t.Setenv("RESEND_API_KEY", "api_key_for_test")
+
 	cfg := LoadConfig()
 	db, err := InitDB(cfg)
 	app := NewApp(cfg, db)
