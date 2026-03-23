@@ -20,7 +20,7 @@ jobs:
           go-version: '1.22' # Matches Containerfile
 
       - name: Run Go Tests
-        run: go test -v ./...
+        run: cd backend && go test -v ./...
 
       - name: Deploy to Server
         if: success()
