@@ -53,80 +53,84 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
 
+	// Global middlewares (Apply to all routes, including /health)
+	r.Use(RequestID)
+	r.Use(chimiddleware.Recoverer)
+
 	// Unlogged routes
 	r.Get("/health", healthHandler)
 
-	r.Use(RequestID)
-	r.Use(chimiddleware.Logger)
-	r.Use(chimiddleware.Recoverer)
+	// Logged routes (Everything else)
+	r.Group(func(r chi.Router) {
+		r.Use(chimiddleware.Logger)
 
-	// Static files
-	spa := spaHandler{
-		staticPath: "./static", 
-		indexPath:  "index.html",
-	}
-	r.Handle("/*", spa)
+		// Static files
+		spa := spaHandler{
+			staticPath: "./static", 
+			indexPath:  "index.html",
+		}
+		r.Handle("/*", spa)
 
-	// Public routes
-	r.Route("/api/ui/auth", func(r chi.Router) {
-		r.Post("/signup", app.SignupHandler)
-		r.Post("/login", app.LoginHandler)
-		r.Post("/verify-email", app.VerifyEmailHandler)
-		r.Post("/forgot-password", app.ForgotPasswordHandler)
-		r.Post("/reset-password", app.ResetPasswordHandler)
-	})
-
-	// Public agent browsing routes (no auth required)
-	r.Route("/api/ui/agents", func(r chi.Router) {
-		r.Get("/", app.ListAgentsHandler)
-		r.Get("/{id}", app.GetAgentHandler)
-	})
-
-	// JWT-protected UI routes
-	r.Route("/api/ui", func(r chi.Router) {
-		r.Use(app.JWTAuth)
-
-		r.Route("/handlers", func(r chi.Router) {
-			r.Post("/agents", app.CreateAgentHandler)
-			r.Get("/agents", app.ListHandlerAgentsHandler)
-			r.Get("/jobs", app.ListJobsHandler)
+		// Public routes
+		r.Route("/api/ui/auth", func(r chi.Router) {
+			r.Post("/signup", app.SignupHandler)
+			r.Post("/login", app.LoginHandler)
+			r.Post("/verify-email", app.VerifyEmailHandler)
+			r.Post("/forgot-password", app.ForgotPasswordHandler)
+			r.Post("/reset-password", app.ResetPasswordHandler)
 		})
 
-		// Singular aliases for frontend compatibility
-		r.Route("/handler", func(r chi.Router) {
-			r.Get("/agents", app.ListHandlerAgentsHandler)
-			r.Get("/jobs", app.ListJobsHandler)
+		// Public agent browsing routes (no auth required)
+		r.Route("/api/ui/agents", func(r chi.Router) {
+			r.Get("/", app.ListAgentsHandler)
+			r.Get("/{id}", app.GetAgentHandler)
 		})
 
-		r.Route("/jobs", func(r chi.Router) {
-			r.Post("/hire", app.HireAgentHandler)
-			r.Get("/", app.ListJobsHandler)
-			r.Get("/{id}", app.GetJobHandler)
-			r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
-			r.Post("/{job_id}/sow", app.CreateOrUpdateSOW)
-			r.Get("/{job_id}/sow", app.GetSOW)
-			r.Post("/{job_id}/sow/accept", app.AcceptSOW)
-			r.Post("/{job_id}/checkout", app.CreateCheckoutHandler)
-			r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
-			r.Post("/{job_id}/request-revision", app.RequestRevisionHandler)
+		// JWT-protected UI routes
+		r.Route("/api/ui", func(r chi.Router) {
+			r.Use(app.JWTAuth)
+
+			r.Route("/handlers", func(r chi.Router) {
+				r.Post("/agents", app.CreateAgentHandler)
+				r.Get("/agents", app.ListHandlerAgentsHandler)
+				r.Get("/jobs", app.ListJobsHandler)
+			})
+
+			// Singular aliases for frontend compatibility
+			r.Route("/handler", func(r chi.Router) {
+				r.Get("/agents", app.ListHandlerAgentsHandler)
+				r.Get("/jobs", app.ListJobsHandler)
+			})
+
+			r.Route("/jobs", func(r chi.Router) {
+				r.Post("/hire", app.HireAgentHandler)
+				r.Get("/", app.ListJobsHandler)
+				r.Get("/{id}", app.GetJobHandler)
+				r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
+				r.Post("/{job_id}/sow", app.CreateOrUpdateSOW)
+				r.Get("/{job_id}/sow", app.GetSOW)
+				r.Post("/{job_id}/sow/accept", app.AcceptSOW)
+				r.Post("/{job_id}/checkout", app.CreateCheckoutHandler)
+				r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
+				r.Post("/{job_id}/request-revision", app.RequestRevisionHandler)
+			})
+
+			r.Get("/transactions", app.GetTransactionsHandler)
 		})
 
-		r.Get("/transactions", app.GetTransactionsHandler)
+		// Public webhook routes (no auth)
+		r.Post("/api/webhooks/stripe", app.HandleStripeWebhook)
+
+		// API key protected agent routes
+		r.Route("/api/v1/jobs", func(r chi.Router) {
+			r.Use(app.APIKeyAuth)
+			r.Get("/pending", app.GetPendingJobsHandler)
+			r.Post("/{job_id}/accept", app.AcceptJobHandler)
+			r.Post("/{job_id}/decline", app.DeclineJobHandler)
+			r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
+			r.Post("/{job_id}/deliver", app.DeliverJobHandler)
+		})
 	})
-
-	// Public webhook routes (no auth)
-	r.Post("/api/webhooks/stripe", app.HandleStripeWebhook)
-
-	// API key protected agent routes
-	r.Route("/api/v1/jobs", func(r chi.Router) {
-		r.Use(app.APIKeyAuth)
-		r.Get("/pending", app.GetPendingJobsHandler)
-		r.Post("/{job_id}/accept", app.AcceptJobHandler)
-		r.Post("/{job_id}/decline", app.DeclineJobHandler)
-		r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
-		r.Post("/{job_id}/deliver", app.DeliverJobHandler)
-	})
-
 	return r
 }
 
