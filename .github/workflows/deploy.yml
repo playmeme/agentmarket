@@ -3,6 +3,7 @@ name: Remote Deploy
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -104,6 +105,7 @@ jobs:
           target: "~/agentmarket/static"  # Avoid untracked files in git repo
           strip_components: 2 # Strips "frontend/build/" from the destination path
           rm: true # Clean out previous hash-named files in the target dir before copying
+          timeout: "3m"
 
       - name: Sync Git Repo on Server (Frontend Only)
         if: success() && steps.filter.outputs.frontend == 'true' && steps.filter.outputs.backend != 'true'
