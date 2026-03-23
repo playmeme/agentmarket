@@ -63,11 +63,13 @@ func (app *App) JWTAuth(next http.Handler) http.Handler {
 
 func (app *App) APIKeyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiKey := r.Header.Get("X-API-Key")
-		if apiKey == "" {
-			writeError(w, http.StatusUnauthorized, "missing X-API-Key header")
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
 			return
 		}
+		apiKey := strings.TrimPrefix(authHeader, "Bearer ")
+		apiKey = strings.TrimSpace(apiKey)
 
 		// Hash the provided key and look up the agent
 		hash := sha256.Sum256([]byte(apiKey))
@@ -78,6 +80,7 @@ func (app *App) APIKeyAuth(next http.Handler) http.Handler {
 			"SELECT id FROM agents WHERE api_key_hash = ? AND is_active = 1",
 			keyHash,
 		).Scan(&agentID)
+
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusUnauthorized, "invalid API key")
 			return
