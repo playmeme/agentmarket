@@ -70,6 +70,10 @@ type HireRequest struct {
 	Milestones   []MilestoneInput `json:"milestones"`
 }
 
+type AssignAgentRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
 type SubmitProofRequest struct {
 	ProofOfWorkURL   string `json:"proof_of_work_url"`
 	ProofOfWorkNotes string `json:"proof_of_work_notes"`
@@ -266,6 +270,84 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(job)
+}
+
+// AssignAgentHandler assigns an agent to an existing unassigned job.
+// Requires email verification (because this initiates the agent relationship).
+func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "assign_agent")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: assign agent requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can assign agents")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	var req AssignAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+
+	// Email verification required to assign an agent
+	var emailVerifiedAt sql.NullTime
+	err := app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
+	if err != nil {
+		log.Error("assign agent: database error checking email verification", "employer_id", employerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if !emailVerifiedAt.Valid {
+		log.Warn("assign agent blocked: employer email not verified", "employer_id", employerID)
+		writeError(w, http.StatusForbidden, "Please verify your email before assigning an agent")
+		return
+	}
+
+	// Verify agent exists and is active
+	var agentExists int
+	err = app.DB.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ? AND is_active = 1", req.AgentID).Scan(&agentExists)
+	if err != nil || agentExists == 0 {
+		writeError(w, http.StatusNotFound, "agent not found or inactive")
+		return
+	}
+
+	// Only allow assigning to jobs owned by this employer that have no agent yet
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET agent_id = ?, status = 'PENDING_ACCEPTANCE', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND employer_id = ? AND (agent_id = '' OR agent_id IS NULL)`,
+		req.AgentID, jobID, employerID,
+	)
+	if err != nil {
+		log.Error("assign agent: database error", "job_id", jobID, "employer_id", employerID, "agent_id", req.AgentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to assign agent")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found, not owned by you, or already has an agent assigned")
+		return
+	}
+
+	log.Info("agent assigned to job", "job_id", jobID, "employer_id", employerID, "agent_id", req.AgentID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("assign agent: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
 }
 
 func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {

@@ -42,13 +42,18 @@
 			DELIVERED: 'badge-delivered',
 			COMPLETED: 'badge-completed',
 			PENDING: 'badge-pending',
+			PENDING_ACCEPTANCE: 'badge-pending',
 			CANCELLED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}
 
 	function statusLabel(status: string): string {
-		return status.replace('_', ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+		return status.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+	}
+
+	function isUnassigned(job: Job): boolean {
+		return !job.agent_id || job.agent_id === '';
 	}
 
 	onMount(async () => {
@@ -80,9 +85,9 @@
 	<div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
 		<div>
 			<h1>Employer Dashboard</h1>
-			<p>Manage your posted jobs and track agent progress.</p>
+			<p>Manage your job briefs and track agent progress.</p>
 		</div>
-		<a href="/" class="btn btn-primary">Browse agents</a>
+		<a href="/jobs/new" class="btn btn-primary">Enter a Job Brief</a>
 	</div>
 
 	{#if loading}
@@ -91,8 +96,9 @@
 		<div class="alert alert-error">{error}</div>
 	{:else if jobs.length === 0}
 		<div class="card" style="text-align: center; padding: 3rem; color: #888;">
-			<p>No jobs yet.</p>
-			<a href="/" class="btn btn-primary" style="margin-top: 0.75rem;">Find an agent to hire</a>
+			<p>No job briefs yet.</p>
+			<p style="font-size: 0.9rem; margin-top: 0.5rem;">Create a job brief first, then assign it to an agent.</p>
+			<a href="/jobs/new" class="btn btn-primary" style="margin-top: 0.75rem;">Enter a Job Brief</a>
 		</div>
 	{:else}
 		<div style="background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
@@ -104,6 +110,7 @@
 						<th>Status</th>
 						<th>Payout</th>
 						<th>Milestones</th>
+						<th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -118,7 +125,11 @@
 								{/if}
 							</td>
 							<td>
-								<a href="/agents/{job.agent_id}">Agent #{job.agent_id.slice(0, 8)}</a>
+								{#if isUnassigned(job)}
+									<span style="color: #aaa; font-style: italic; font-size: 0.9rem;">Not assigned</span>
+								{:else}
+									<a href="/agents/{job.agent_id}">Agent #{job.agent_id.slice(0, 8)}</a>
+								{/if}
 							</td>
 							<td>
 								<span class="badge {statusBadge(job.status)}">{statusLabel(job.status)}</span>
@@ -129,6 +140,13 @@
 									{job.milestones.filter(m => m.status === 'COMPLETED').length}/{job.milestones.length} done
 								{:else}
 									—
+								{/if}
+							</td>
+							<td>
+								{#if isUnassigned(job)}
+									<a href="/" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap;">
+										Submit to Agent
+									</a>
 								{/if}
 							</td>
 						</tr>
