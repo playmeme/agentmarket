@@ -66,7 +66,7 @@ func NewRouter(app *App) *chi.Mux {
 
 		// Static files
 		spa := spaHandler{
-			staticPath: "./static", 
+			staticPath: "./static",
 			indexPath:  "index.html",
 		}
 		r.Handle("/*", spa)
@@ -106,6 +106,7 @@ func NewRouter(app *App) *chi.Mux {
 				r.Post("/hire", app.HireAgentHandler)
 				r.Get("/", app.ListJobsHandler)
 				r.Get("/{id}", app.GetJobHandler)
+				r.Post("/{id}/assign", app.AssignAgentHandler)
 				r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
 				r.Post("/{job_id}/sow", app.CreateOrUpdateSOW)
 				r.Get("/{job_id}/sow", app.GetSOW)
