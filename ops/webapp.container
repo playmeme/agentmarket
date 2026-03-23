@@ -1,0 +1,35 @@
+# Podman Quadlet unit file for the AgentMarket web application.
+# Place this file at: ~/.config/containers/systemd/webapp.container
+# Then run: systemctl --user daemon-reload
+#
+# Static frontend files are NOT baked into the container image.
+# They are built by CI (see .github/workflows/deploy.yml, deploy-frontend job)
+# and copied via SCP to ~/agentmarket/static on the host.
+# The Volume= line below bind-mounts that host directory into the container at
+# /app/static, which is where the Go backend serves static files from.
+# This means frontend-only updates never require a container rebuild.
+
+[Unit]
+Description=AgentMarket web application
+After=network-online.target
+
+[Container]
+Image=localhost/webapp-image
+PublishPort=8080:8080
+
+# Bind-mount the host static dir into the container.
+# Frontend CI copies built files here; backend serves them from /app/static.
+Volume=%h/agentmarket/static:/app/static:z
+
+# Persist the SQLite database outside the container so it survives rebuilds.
+Volume=%h/agentmarket/data:/app/data:z
+
+# Load secrets from a separate env file (written by the backend CI deploy step).
+EnvironmentFile=%h/.config/containers/webapp.env
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
