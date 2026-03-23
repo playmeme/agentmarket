@@ -1,15 +1,18 @@
 #!/bin/bash
 # setup.sh — One-time setup for AgentMarket on a fresh Ubuntu/Debian VPS
-# Usage: bash setup.sh
-# Replace REPO_URL below with the actual git repository URL before running.
+
+# IMPORTANT NOTE:
+# This script isn't used.
+# The app container is run using Podman Quadlet instead.
+# See `~/.config/containers/systemd`.
 
 set -e
 
-REPO_URL="REPO_URL"          # e.g. https://github.com/youruser/agentmarket.git
-REPO_DIR="agentmarket"
-IMAGE_NAME="agentmarket"
-CONTAINER_NAME="agentmarket"
-HOST_PORT=80
+REPO_URL="https://github.com/playmeme/agentmarket.git"
+REPO_DIR="agentmarket.git"
+IMAGE_NAME="webapp-image"
+CONTAINER_NAME="webapp"
+HOST_PORT=8080
 
 echo "==> Installing Podman..."
 apt-get update -qq
@@ -17,7 +20,7 @@ apt-get install -y podman
 
 echo "==> Cloning repository..."
 git clone "$REPO_URL" "$REPO_DIR"
-cd "$REPO_DIR/site-agent-built"
+cd "$REPO_DIR"
 
 echo "==> Building container image..."
 podman build -t "$IMAGE_NAME" -f Containerfile .
@@ -26,7 +29,7 @@ echo "==> Starting container on port $HOST_PORT..."
 podman run -d \
   --name "$CONTAINER_NAME" \
   --restart=always \
-  -p "$HOST_PORT":80 \
+  -p "$HOST_PORT":8080 \
   "$IMAGE_NAME"
 
 echo ""

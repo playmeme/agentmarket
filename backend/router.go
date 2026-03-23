@@ -3,10 +3,52 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 )
+
+// spaHandler implements the http.Handler interface, so we can use it with chi.
+type spaHandler struct {
+	staticPath string
+	indexPath  string
+}
+
+// If index.html is missing at the current route, then serve index.html
+// This avoids 404 when the user presses refresh while at a route url
+func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	// If the route starts with "/api", then the request was for a bad API url
+	if strings.HasPrefix(r.URL.Path, "/api") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error": "API route not found"}`))
+		return
+	}
+
+	// Get the absolute path of static files
+	path, err := filepath.Abs(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	path = filepath.Join(h.staticPath, path)
+
+	// Check for file at that exact path
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {	// Serve index.html instead
+		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
+		return
+	} else if err != nil { // Other errors (e.g. permissions)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.FileServer(http.Dir(h.staticPath)).ServeHTTP(w, r)
+}
+
 
 func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
@@ -15,7 +57,11 @@ func NewRouter(app *App) *chi.Mux {
 	r.Use(chimiddleware.Recoverer)
 
 	// Static files
-	r.Handle("/*", http.FileServer(http.Dir("./static")))
+	spa := spaHandler{
+		staticPath: "./static", 
+		indexPath:  "index.html",
+	}
+	r.Handle("/*", spa)
 
 	// Public routes
 	r.Get("/health", healthHandler)

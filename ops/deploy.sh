@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-IMAGE_NAME="webapp-image"
+IMAGE_NAME="localhost/webapp-image"
 SERVICE_NAME="webapp.service"
 
 git fetch origin main
@@ -20,7 +20,8 @@ if [ "$LOCAL" != "$REMOTE" ] || [ "$1" == "--force" ]; then
     echo "Changes detected or force flag set. Re-deploying..."
     
     git pull origin main
-    podman build -t "$IMAGE_NAME" .    # Use --cgroup-manager if systemd bus issues persist
+    podman build --no-cache --build-arg VERSION="Undefined" -t "$IMAGE_NAME" .    # Use --cgroup-manager if systemd bus issues persist
+	export XDG_RUNTIME_DIR=/run/user/$(id -u)
     systemctl --user daemon-reload
     systemctl --user restart "$SERVICE_NAME"
     podman image prune -f

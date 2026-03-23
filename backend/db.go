@@ -11,7 +11,7 @@ import (
 func InitDB(cfg *Config) (*sql.DB, error) {
 	dsn := cfg.DSName
 	if dsn == "" {
-		dsn = "agentmarket.db"
+		dsn = "./data/agentmarket.db"
 	}
 
 	db, err := sql.Open("sqlite", dsn)

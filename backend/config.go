@@ -20,7 +20,7 @@ func LoadConfig() *Config {
 
 	dsName := os.Getenv("DATABASE_URL")
 	if dsName == "" {
-		slog.Warn("DATABASE_URL not set, using default", "default", "agentmarket.db")
+		slog.Warn("DATABASE_URL not set, using default", "default", "./data/agentmarket.db")
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")

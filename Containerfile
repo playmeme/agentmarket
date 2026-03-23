@@ -16,7 +16,8 @@ RUN cd backend && CGO_ENABLED=0 GOOS=linux go build \
 
 
 # Make a minimal production image
-FROM scratch
+FROM alpine:latest
+RUN apk --no-cache add curl
 WORKDIR /app
 COPY --from=builder /app/main .
 COPY --from=builder /app/static ./static
