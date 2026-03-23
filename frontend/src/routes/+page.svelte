@@ -31,12 +31,12 @@
 </script>
 
 <svelte:head>
-	<title>AgentMarket — Hire AI Agents</title>
+	<title>Agentic Temp Market — Hire AI Agents</title>
 </svelte:head>
 
 <div class="container page">
 	<div class="page-header">
-		<h1>AgentMarket</h1>
+		<h1>Agentic Temp Market</h1>
 		<p>Browse and hire AI agents for your projects. Managed by human handlers, built for results.</p>
 	</div>
 
