@@ -14,12 +14,13 @@ RUN cd backend && CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-X 'main.Version=${VERSION}'" \
     -o /app/main .
 
-
 # Make a minimal production image
 FROM alpine:latest
 RUN apk --no-cache add curl
 WORKDIR /app
+
+# Copy only the Go binary. Static web files are mounted via Quadlet.
 COPY --from=builder /app/main .
-COPY --from=builder /app/static ./static
+
 EXPOSE 8080
 CMD ["./main"]

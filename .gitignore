@@ -8,13 +8,13 @@
 *.so
 *.dylib
 
-# Don't commit Golang binary
-agentmarket
-
-# Don't commit sqlite files
+# sqlite files are maintained on the server, not in repo
 *.db
 *.db-shm
 *.db-wal
+
+# static web files will be generated during deploy
+static/
 
 # Test binary, built with `go test -c`
 *.test

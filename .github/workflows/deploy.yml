@@ -14,16 +14,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check for changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'ops/**'
+              - 'Containerfile'
+            frontend:
+              - 'frontend/**' # FIXED: Watch the source code, not the static folder
+
+      # ==========================================
+      # BACKEND: Run Tests & Deploy (Only if backend changed)
+      # ==========================================
       - name: Set up Go
+        if: steps.filter.outputs.backend == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.23' # Matches Containerfile
 
       - name: Run Go Tests
+        if: steps.filter.outputs.backend == 'true'
         run: cd backend && go test -v ./...
 
-      - name: Deploy to Server
-        if: success()
+      - name: Deploy Backend to Server
+        if: success() && steps.filter.outputs.backend == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -59,6 +76,51 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           GITHUB_SHA: ${{ github.sha }}
 
+      # ==========================================
+      # FRONTEND: Build & Deploy (Only if frontend changed)
+      # ==========================================
+      - name: Setup Node.js
+        if: success() && steps.filter.outputs.frontend == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Svelte Frontend
+        if: success() && steps.filter.outputs.frontend == 'true'
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Copy Build Artifacts to Server
+        if: success() && steps.filter.outputs.frontend == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "frontend/build/*"
+          target: "~/agentmarket/static"  # Avoid untracked files in git repo
+          strip_components: 2 # Strips "frontend/build/" from the destination path
+          rm: true # Clean out previous hash-named files in the target dir before copying
+
+      - name: Sync Git Repo on Server (Frontend Only)
+        if: success() && steps.filter.outputs.frontend == 'true' && steps.filter.outputs.backend != 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            cd ~/agentmarket/agentmarket.git
+            git pull origin main
+
+      # ==========================================
+      # NOTIFY: Discord Alert
+      # ==========================================
       - name: Notify Discord
         if: always()
         uses: rjstone/discord-webhook-notify@v1
@@ -66,3 +128,4 @@ jobs:
           severity: ${{ job.status == 'success' && 'info' || 'error' }}
           details: "Deployment of `${{ github.sha }}` to agentictemp.com: ${{ job.status }}"
           webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
+
