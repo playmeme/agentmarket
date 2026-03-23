@@ -9,8 +9,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  test-and-deploy:
+  # ==========================================
+  # Detect which parts of the codebase changed
+  # ==========================================
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,30 +31,35 @@ jobs:
               - 'ops/**'
               - 'Containerfile'
             frontend:
-              - 'frontend/**' # FIXED: Watch the source code, not the static folder
+              - 'frontend/**'
 
-      # ==========================================
-      # BACKEND: Run Tests & Deploy (Only if backend changed)
-      # ==========================================
+  # ==========================================
+  # BACKEND: Run Tests & Deploy (Only if backend changed)
+  # ==========================================
+  deploy-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Go
-        if: steps.filter.outputs.backend == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.23' # Matches Containerfile
 
       - name: Run Go Tests
-        if: steps.filter.outputs.backend == 'true'
         run: cd backend && go test -v ./...
 
       - name: Deploy Backend to Server
-        if: success() && steps.filter.outputs.backend == 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: GITHUB_SHA,DATABASE_URL,JWT_SECRET,RESEND_API_KEY
+          envs: GITHUB_SHA,DATABASE_URL,JWT_SECRET,RESEND_API_KEY,STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET
           script: |
             set -e
             SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
@@ -62,6 +73,8 @@ jobs:
             DATABASE_URL=${DATABASE_URL}
             JWT_SECRET=${JWT_SECRET}
             RESEND_API_KEY=${RESEND_API_KEY}
+            STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+            STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
             EOF
 
             # Build and restart
@@ -75,26 +88,36 @@ jobs:
           DATABASE_URL: "./data/agentmarket.db"
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           GITHUB_SHA: ${{ github.sha }}
 
-      # ==========================================
-      # FRONTEND: Build & Deploy (Only if frontend changed)
-      # ==========================================
+  # ==========================================
+  # FRONTEND: Build & Deploy (Only if frontend changed)
+  # Runs independently of backend — a backend failure won't block frontend deployment.
+  # Static files are copied to a host directory that is bind-mounted into the container
+  # via the Quadlet config (see ops/webapp.container).
+  # ==========================================
+  deploy-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
-        if: success() && steps.filter.outputs.frontend == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Build Svelte Frontend
-        if: success() && steps.filter.outputs.frontend == 'true'
         working-directory: ./frontend
         run: |
           npm ci
           npm run build
 
       - name: Copy Build Artifacts to Server
-        if: success() && steps.filter.outputs.frontend == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -102,13 +125,13 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
           source: "frontend/build/*"
-          target: "~/agentmarket/static"  # Avoid untracked files in git repo
+          # Host path that is bind-mounted into the container (see ops/webapp.container Volume=)
+          target: "~/agentmarket/static"
           strip_components: 2 # Strips "frontend/build/" from the destination path
           rm: true # Clean out previous hash-named files in the target dir before copying
           timeout: "3m"
 
-      - name: Sync Git Repo on Server (Frontend Only)
-        if: success() && steps.filter.outputs.frontend == 'true' && steps.filter.outputs.backend != 'true'
+      - name: Sync Git Repo on Server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -120,14 +143,18 @@ jobs:
             cd ~/agentmarket/agentmarket.git
             git pull origin main
 
-      # ==========================================
-      # NOTIFY: Discord Alert
-      # ==========================================
+  # ==========================================
+  # NOTIFY: Discord Alert (runs after both deploy jobs)
+  # ==========================================
+  notify:
+    needs: [deploy-backend, deploy-frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
       - name: Notify Discord
-        if: always()
         uses: rjstone/discord-webhook-notify@v1
         with:
-          severity: ${{ job.status == 'success' && 'info' || 'error' }}
-          details: "Deployment of `${{ github.sha }}` to agentictemp.com: ${{ job.status }}"
+          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure') && 'error' || 'info' }}
+          details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}"
           webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
