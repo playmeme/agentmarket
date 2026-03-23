@@ -3,12 +3,15 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	stripe "github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/paymentintent"
 )
 
 // --- Models ---
@@ -440,8 +443,34 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	result, err := app.DB.Exec(
-		`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP
+	// Load job to get payout and timeline for default SOW
+	var totalPayout int64
+	var timelineDays int
+	err := app.DB.QueryRow(
+		"SELECT total_payout, timeline_days FROM jobs WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'",
+		jobID, agentID,
+	).Scan(&totalPayout, &timelineDays)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		return
+	}
+	if err != nil {
+		log.Error("job accept: db error loading job", "job_id", jobID, "agent_id", agentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("job accept: begin transaction error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+
+	// Move job to SOW_NEGOTIATION
+	result, err := tx.Exec(
+		`UPDATE jobs SET status = 'SOW_NEGOTIATION', updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, agentID,
 	)
@@ -450,14 +479,32 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
 		return
 	}
 
-	log.Info("job accepted", "job_id", jobID, "agent_id", agentID)
+	// Create default SOW from job's existing payout and timeline
+	sowID := uuid.New().String()
+	_, err = tx.Exec(
+		`INSERT INTO sow (id, job_id, scope, deliverables, price_cents, timeline_days, agent_accepted, employer_accepted)
+		 VALUES (?, ?, '', '', ?, ?, 0, 0)`,
+		sowID, jobID, totalPayout, timelineDays,
+	)
+	if err != nil {
+		log.Error("job accept: failed to create default SOW", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create default SOW")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("job accept: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("job accepted, moved to SOW_NEGOTIATION", "job_id", jobID, "agent_id", agentID, "sow_id", sowID)
 
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
@@ -569,4 +616,255 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(m)
+}
+
+// --- Delivery and Approval Handlers ---
+
+type DeliverJobRequest struct {
+	DeliveryNotes string `json:"delivery_notes"`
+	DeliveryURL   string `json:"delivery_url"`
+}
+
+// DeliverJobHandler marks a job as DELIVERED (agent API key auth).
+// POST /api/v1/jobs/{job_id}/deliver
+func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "deliver_job")
+
+	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	var req DeliverJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'DELIVERED', delivery_notes = ?, delivery_url = ?, delivered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND agent_id = ? AND status = 'IN_PROGRESS'`,
+		req.DeliveryNotes, req.DeliveryURL, jobID, agentID,
+	)
+	if err != nil {
+		log.Error("job deliver failed: database error", "job_id", jobID, "agent_id", agentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+
+	log.Info("job delivered", "job_id", jobID, "agent_id", agentID, "delivery_url", req.DeliveryURL)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("job deliver: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
+// ApproveDeliveryHandler captures the Stripe payment and completes the job (employer JWT auth).
+// POST /api/ui/jobs/{job_id}/approve-delivery
+func (app *App) ApproveDeliveryHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "approve_delivery")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: approve delivery requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can approve delivery")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	// Load job — must be DELIVERED and belong to employer
+	var jobStatus string
+	var stripePaymentIntent sql.NullString
+	err := app.DB.QueryRow(
+		"SELECT status, stripe_payment_intent FROM jobs WHERE id = ? AND employer_id = ?",
+		jobID, employerID,
+	).Scan(&jobStatus, &stripePaymentIntent)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("approve delivery: db error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if jobStatus != "DELIVERED" {
+		writeError(w, http.StatusBadRequest, "job must be in DELIVERED status to approve")
+		return
+	}
+
+	// Capture the Stripe payment intent if present
+	if stripePaymentIntent.Valid && stripePaymentIntent.String != "" {
+		stripe.Key = app.Config.StripeSecretKey
+		_, err = paymentintent.Capture(stripePaymentIntent.String, nil)
+		if err != nil {
+			log.Error("approve delivery: stripe capture failed", "job_id", jobID, "payment_intent", stripePaymentIntent.String, "error", err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to capture payment: %v", err))
+			return
+		}
+		log.Info("payment captured", "job_id", jobID, "payment_intent", stripePaymentIntent.String)
+	}
+
+	_, err = app.DB.Exec(
+		`UPDATE jobs SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		jobID,
+	)
+	if err != nil {
+		log.Error("approve delivery: failed to mark job completed", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("job delivery approved, job completed", "job_id", jobID, "employer_id", employerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("approve delivery: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
+// RequestRevisionHandler moves a DELIVERED job back to IN_PROGRESS (employer JWT auth, one revision).
+// POST /api/ui/jobs/{job_id}/request-revision
+func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "request_revision")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: request revision requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can request revision")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	var jobStatus string
+	var deliveryNotes sql.NullString
+	err := app.DB.QueryRow(
+		"SELECT status, delivery_notes FROM jobs WHERE id = ? AND employer_id = ?",
+		jobID, employerID,
+	).Scan(&jobStatus, &deliveryNotes)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("request revision: db error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if jobStatus != "DELIVERED" {
+		writeError(w, http.StatusBadRequest, "job must be in DELIVERED status to request revision")
+		return
+	}
+
+	// Check if already revised — tracked by [REVISED] marker in delivery_notes
+	notes := ""
+	if deliveryNotes.Valid {
+		notes = deliveryNotes.String
+	}
+	alreadyRevised := false
+	const revisionMarker = "[REVISED]"
+	for i := 0; i <= len(notes)-len(revisionMarker); i++ {
+		if notes[i:i+len(revisionMarker)] == revisionMarker {
+			alreadyRevised = true
+			break
+		}
+	}
+	if alreadyRevised {
+		writeError(w, http.StatusBadRequest, "only one revision is allowed per job")
+		return
+	}
+
+	newNotes := notes + " [REVISED]"
+	_, err = app.DB.Exec(
+		`UPDATE jobs SET status = 'IN_PROGRESS', delivery_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		newNotes, jobID,
+	)
+	if err != nil {
+		log.Error("request revision: failed to update job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("revision requested, job moved to IN_PROGRESS", "job_id", jobID, "employer_id", employerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("request revision: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
+// TransactionSummary is a lightweight view of a job for transaction listing.
+type TransactionSummary struct {
+	JobID               string `json:"job_id"`
+	Title               string `json:"title"`
+	Status              string `json:"status"`
+	TotalPayout         int64  `json:"total_payout"`
+	StripePaymentIntent string `json:"stripe_payment_intent,omitempty"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+}
+
+// GetTransactionsHandler lists all jobs for the current user with payment status.
+// GET /api/ui/transactions
+func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+
+	var query string
+	if role == "EMPLOYER" {
+		query = `SELECT id, title, status, total_payout, stripe_payment_intent, created_at, updated_at
+		          FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`
+	} else {
+		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.created_at, j.updated_at
+		          FROM jobs j JOIN agents a ON j.agent_id = a.id
+		          WHERE a.handler_id = ? ORDER BY j.created_at DESC`
+	}
+
+	rows, err := app.DB.Query(query, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer rows.Close()
+
+	transactions := []TransactionSummary{}
+	for rows.Next() {
+		var t TransactionSummary
+		var spi sql.NullString
+		if err := rows.Scan(&t.JobID, &t.Title, &t.Status, &t.TotalPayout, &spi, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "scan error")
+			return
+		}
+		if spi.Valid {
+			t.StripePaymentIntent = spi.String
+		}
+		transactions = append(transactions, t)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(transactions)
 }

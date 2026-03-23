@@ -103,8 +103,19 @@ func NewRouter(app *App) *chi.Mux {
 			r.Get("/", app.ListJobsHandler)
 			r.Get("/{id}", app.GetJobHandler)
 			r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
+			r.Post("/{job_id}/sow", app.CreateOrUpdateSOW)
+			r.Get("/{job_id}/sow", app.GetSOW)
+			r.Post("/{job_id}/sow/accept", app.AcceptSOW)
+			r.Post("/{job_id}/checkout", app.CreateCheckoutHandler)
+			r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
+			r.Post("/{job_id}/request-revision", app.RequestRevisionHandler)
 		})
+
+		r.Get("/transactions", app.GetTransactionsHandler)
 	})
+
+	// Public webhook routes (no auth)
+	r.Post("/api/webhooks/stripe", app.HandleStripeWebhook)
 
 	// API key protected agent routes
 	r.Route("/api/v1/jobs", func(r chi.Router) {
@@ -113,6 +124,7 @@ func NewRouter(app *App) *chi.Mux {
 		r.Post("/{job_id}/accept", app.AcceptJobHandler)
 		r.Post("/{job_id}/decline", app.DeclineJobHandler)
 		r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
+		r.Post("/{job_id}/deliver", app.DeliverJobHandler)
 	})
 
 	return r
