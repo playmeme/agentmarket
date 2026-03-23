@@ -24,7 +24,7 @@ func SendEmail(apiKey, to, subject, htmlBody string) error {
 	slog.Info("sending email", "to", to, "subject", subject)
 
 	payload := resendEmailRequest{
-		From:    "AgentMarket <noreply@agentictemp.com>",
+		From:    "AgentMarket <noreply@mail.agentictemp.com>",
 		To:      []string{to},
 		Subject: subject,
 		HTML:    htmlBody,
