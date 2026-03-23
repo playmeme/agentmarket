@@ -6,10 +6,14 @@ import (
 )
 
 type Config struct {
-	Port         string
-	DSName       string
-	JWTSecret    []byte
-	ResendAPIKey string
+	Port                 string
+	DSName               string
+	JWTSecret            []byte
+	ResendAPIKey         string
+	StripeSecretKey      string
+	StripeWebhookSecret  string
+	StripePublishableKey string
+	BaseURL              string
 }
 
 func LoadConfig() *Config {
@@ -35,11 +39,23 @@ func LoadConfig() *Config {
 		os.Exit(1)
 	}
 
+	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
+	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	stripePublishableKey := os.Getenv("STRIPE_PUBLISHABLE_KEY")
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+
 	slog.Info("config loaded", "port", port, "database_url_set", dsName != "")
 	return &Config{
-		Port:         port,
-		DSName:       dsName,
-		JWTSecret:    []byte(jwtSecret),
-		ResendAPIKey: resendApiKey,
+		Port:                 port,
+		DSName:               dsName,
+		JWTSecret:            []byte(jwtSecret),
+		ResendAPIKey:         resendApiKey,
+		StripeSecretKey:      stripeSecretKey,
+		StripeWebhookSecret:  stripeWebhookSecret,
+		StripePublishableKey: stripePublishableKey,
+		BaseURL:              baseURL,
 	}
 }

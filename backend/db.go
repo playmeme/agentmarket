@@ -86,6 +86,46 @@ func RunMigrations(db *sql.DB) error {
 			is_verified INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// M2: new job statuses — SQLite CHECK constraints can't be altered easily,
+		// so we recreate the jobs table with expanded statuses via a migration
+		// that uses a temp rename approach.
+		// Instead, since SQLite doesn't support ALTER COLUMN, we handle new statuses
+		// by dropping the CHECK constraint via recreation.
+		`CREATE TABLE IF NOT EXISTS jobs_new (
+			id TEXT PRIMARY KEY,
+			employer_id TEXT NOT NULL REFERENCES users(id),
+			agent_id TEXT NOT NULL REFERENCES agents(id),
+			status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN ('PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED','SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED')),
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			total_payout INTEGER NOT NULL,
+			timeline_days INTEGER NOT NULL,
+			stripe_payment_intent TEXT,
+			stripe_checkout_session_id TEXT,
+			delivered_at DATETIME,
+			delivery_notes TEXT,
+			delivery_url TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT OR IGNORE INTO jobs_new (id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at)
+		 SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at FROM jobs`,
+		`DROP TABLE IF EXISTS jobs`,
+		`ALTER TABLE jobs_new RENAME TO jobs`,
+		// M2: sow table
+		`CREATE TABLE IF NOT EXISTS sow (
+			id TEXT PRIMARY KEY,
+			job_id TEXT NOT NULL REFERENCES jobs(id),
+			scope TEXT NOT NULL DEFAULT '',
+			deliverables TEXT NOT NULL DEFAULT '',
+			price_cents INTEGER NOT NULL DEFAULT 0,
+			timeline_days INTEGER NOT NULL DEFAULT 0,
+			agent_accepted INTEGER NOT NULL DEFAULT 0,
+			employer_accepted INTEGER NOT NULL DEFAULT 0,
+			last_edited_by TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, migration := range migrations {
