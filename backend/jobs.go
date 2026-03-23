@@ -156,37 +156,40 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	employerID, _ := r.Context().Value(contextKeyUserID).(string)
 
-	// Enforce email verification before hiring
-	var emailVerifiedAt sql.NullTime
-	err := app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
-	if err != nil {
-		log.Error("hire agent: database error checking email verification", "employer_id", employerID, "error", err)
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if !emailVerifiedAt.Valid {
-		log.Warn("hire agent blocked: employer email not verified", "employer_id", employerID)
-		writeError(w, http.StatusForbidden, "Please verify your email before hiring agents")
-		return
-	}
-
 	var req HireRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	if req.AgentID == "" || req.Title == "" || req.TotalPayout == 0 || req.TimelineDays == 0 {
-		writeError(w, http.StatusBadRequest, "agent_id, title, total_payout, and timeline_days are required")
+	if req.Title == "" || req.TotalPayout == 0 || req.TimelineDays == 0 {
+		writeError(w, http.StatusBadRequest, "title, total_payout, and timeline_days are required")
 		return
 	}
 
-	// Verify agent exists and is active
-	var agentExists int
-	err = app.DB.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ? AND is_active = 1", req.AgentID).Scan(&agentExists)
-	if err != nil || agentExists == 0 {
-		writeError(w, http.StatusNotFound, "agent not found or inactive")
-		return
+	// Email verification is only required when assigning an agent to the job.
+	// Employers may create and save job listings without verifying their email first.
+	if req.AgentID != "" {
+		var emailVerifiedAt sql.NullTime
+		err := app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", employerID).Scan(&emailVerifiedAt)
+		if err != nil {
+			log.Error("hire agent: database error checking email verification", "employer_id", employerID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if !emailVerifiedAt.Valid {
+			log.Warn("hire agent blocked: employer email not verified", "employer_id", employerID)
+			writeError(w, http.StatusForbidden, "Please verify your email before assigning an agent")
+			return
+		}
+
+		// Verify agent exists and is active
+		var agentExists int
+		err = app.DB.QueryRow("SELECT COUNT(*) FROM agents WHERE id = ? AND is_active = 1", req.AgentID).Scan(&agentExists)
+		if err != nil || agentExists == 0 {
+			writeError(w, http.StatusNotFound, "agent not found or inactive")
+			return
+		}
 	}
 
 	tx, err := app.DB.Begin()

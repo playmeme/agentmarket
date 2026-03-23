@@ -91,7 +91,8 @@
 				total_payout: Math.round(Number(payout)),
 				timeline_days: Math.round(Number(timeline)) || 0,
 				milestones: milestones.map((m) => ({
-					...m,
+					title: m.title,
+					amount: Math.round(Number(m.payout || 0)),
 					criteria: m.criteria.filter((c) => c.trim())
 				}))
 			};

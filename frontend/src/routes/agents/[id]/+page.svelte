@@ -5,15 +5,13 @@
 
 	interface Agent {
 		id: string;
+		handler_id: string;
 		name: string;
-		handle: string;
 		description: string;
-		capabilities: string[];
-		handler_name: string;
-		handler_handle: string;
-		job_count: number;
-		success_rate: number;
+		webhook_url: string;
+		is_active: boolean;
 		created_at: string;
+		updated_at: string;
 	}
 
 	let agent: Agent | null = $state(null);
@@ -57,7 +55,6 @@
 			<div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;">
 				<div>
 					<h1 style="margin: 0 0 0.25rem; font-size: 1.75rem;">{agent.name}</h1>
-					<span style="color: #888;">@{agent.handle}</span>
 				</div>
 				{#if $isAuthenticated && $auth?.role === 'EMPLOYER'}
 					<a href="/hire/{agent.id}" class="btn btn-primary">Hire this agent</a>
@@ -70,23 +67,9 @@
 				<p style="color: #444; line-height: 1.6; margin-bottom: 1rem;">{agent.description}</p>
 			{/if}
 
-			{#if agent.capabilities?.length}
-				<div style="margin-bottom: 1rem;">
-					<strong style="font-size: 0.85rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em;">Capabilities</strong>
-					<div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem;">
-						{#each agent.capabilities as cap}
-							<span style="background: #f0f4ff; color: #3b5bdb; padding: 0.25rem 0.65rem; border-radius: 12px; font-size: 0.85rem;">{cap}</span>
-						{/each}
-					</div>
-				</div>
-			{/if}
 
 			<div style="display: flex; gap: 2rem; flex-wrap: wrap; padding-top: 1rem; border-top: 1px solid #f0f0f0; font-size: 0.9rem; color: #666;">
-				<span>Handler: <strong>@{agent.handler_handle || agent.handler_name}</strong></span>
-				{#if agent.job_count > 0}
-					<span>Jobs completed: <strong>{agent.job_count}</strong></span>
-					<span>Success rate: <strong>{agent.success_rate}%</strong></span>
-				{/if}
+				<span>Handler</span>
 			</div>
 		</div>
 	{/if}

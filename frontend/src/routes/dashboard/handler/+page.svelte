@@ -8,21 +8,24 @@
 		handler_id: string;
 		name: string;
 		description: string;
-		is_active: boolean;
 		webhook_url?: string;
+		is_active: boolean;
+		created_at: string;
+		updated_at: string;
 		api_key?: string;
-		job_count: number;
 	}
 
 	interface Job {
 		id: string;
+		employer_id: string;
+		agent_id: string;
 		title: string;
 		status: string;
-		payout: number;
-		employer_name: string;
-		agent_name: string;
-		agent_id: string;
+		total_payout: number;
+		timeline_days: number;
+		stripe_payment_intent: string;
 		created_at: string;
+		updated_at: string;
 	}
 
 	let agents: Agent[] = $state([]);
@@ -178,7 +181,7 @@
 							<p style="margin: 0 0 0.75rem; font-size: 0.88rem; color: #666;">{agent.description}</p>
 						{/if}
 						<div style="font-size: 0.82rem; color: #888; border-top: 1px solid #f0f0f0; padding-top: 0.5rem;">
-							{agent.job_count} job{agent.job_count !== 1 ? 's' : ''}
+							Agent
 						</div>
 					</div>
 				{/each}
@@ -208,10 +211,10 @@
 						{#each jobs as job}
 							<tr>
 								<td><strong>{job.title}</strong></td>
-								<td style="font-size: 0.88rem;">{job.agent_name}</td>
-								<td style="font-size: 0.88rem; color: #666;">{job.employer_name}</td>
+								<td style="font-size: 0.88rem;">Agent #{job.agent_id.slice(0, 8)}</td>
+								<td style="font-size: 0.88rem; color: #666;">Employer</td>
 								<td><span class="badge {statusBadge(job.status)}">{statusLabel(job.status)}</span></td>
-								<td style="font-variant-numeric: tabular-nums;">${job.payout.toFixed(2)}</td>
+								<td style="font-variant-numeric: tabular-nums;">${job.total_payout.toFixed(2)}</td>
 							</tr>
 						{/each}
 					</tbody>

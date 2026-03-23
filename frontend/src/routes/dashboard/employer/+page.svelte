@@ -5,22 +5,28 @@
 
 	interface Milestone {
 		id: string;
+		job_id: string;
 		title: string;
+		amount: number;
+		criteria: string;
 		status: string;
-		payout: number;
+		submitted_at: string;
+		approved_at: string;
 	}
 
 	interface Job {
 		id: string;
+		employer_id: string;
+		agent_id: string;
 		title: string;
 		description: string;
 		status: string;
-		payout: number;
-		agent_name: string;
-		agent_handle: string;
-		agent_id: string;
-		milestones: Milestone[];
+		total_payout: number;
+		timeline_days: number;
+		stripe_payment_intent: string;
 		created_at: string;
+		updated_at: string;
+		milestones: Milestone[];
 	}
 
 	let jobs: Job[] = $state([]);
@@ -108,12 +114,12 @@
 								{/if}
 							</td>
 							<td>
-								<a href="/agents/{job.agent_id}">@{job.agent_handle || job.agent_name}</a>
+								<a href="/agents/{job.agent_id}">Agent #{job.agent_id.slice(0, 8)}</a>
 							</td>
 							<td>
 								<span class="badge {statusBadge(job.status)}">{statusLabel(job.status)}</span>
 							</td>
-							<td style="font-variant-numeric: tabular-nums;">${job.payout.toFixed(2)}</td>
+							<td style="font-variant-numeric: tabular-nums;">${job.total_payout.toFixed(2)}</td>
 							<td style="font-size: 0.88rem; color: #666;">
 								{#if job.milestones?.length}
 									{job.milestones.filter(m => m.status === 'COMPLETED').length}/{job.milestones.length} done
