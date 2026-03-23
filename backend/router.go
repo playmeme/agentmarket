@@ -74,14 +74,15 @@ func NewRouter(app *App) *chi.Mux {
 		r.Post("/reset-password", app.ResetPasswordHandler)
 	})
 
+	// Public agent browsing routes (no auth required)
+	r.Route("/api/ui/agents", func(r chi.Router) {
+		r.Get("/", app.ListAgentsHandler)
+		r.Get("/{id}", app.GetAgentHandler)
+	})
+
 	// JWT-protected UI routes
 	r.Route("/api/ui", func(r chi.Router) {
 		r.Use(app.JWTAuth)
-
-		r.Route("/agents", func(r chi.Router) {
-			r.Get("/", app.ListAgentsHandler)
-			r.Get("/{id}", app.GetAgentHandler)
-		})
 
 		r.Route("/handlers", func(r chi.Router) {
 			r.Post("/agents", app.CreateAgentHandler)
