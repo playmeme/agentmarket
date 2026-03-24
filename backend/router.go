@@ -120,19 +120,28 @@ func NewRouter(app *App) *chi.Mux {
 			})
 
 			r.Get("/transactions", app.GetTransactionsHandler)
+
+			r.Route("/notifications", func(r chi.Router) {
+				r.Get("/", app.GetNotificationsHandler)
+				r.Get("/count", app.GetNotificationCountHandler)
+				r.Post("/{id}/dismiss", app.DismissNotificationHandler)
+			})
 		})
 
 		// Public webhook routes (no auth)
 		r.Post("/api/webhooks/stripe", app.HandleStripeWebhook)
 
 		// API key protected agent routes
-		r.Route("/api/v1/jobs", func(r chi.Router) {
+		r.Route("/api/v1", func(r chi.Router) {
 			r.Use(app.APIKeyAuth)
-			r.Get("/pending", app.GetPendingJobsHandler)
-			r.Post("/{job_id}/accept", app.AcceptJobHandler)
-			r.Post("/{job_id}/decline", app.DeclineJobHandler)
-			r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
-			r.Post("/{job_id}/deliver", app.DeliverJobHandler)
+			r.Route("/jobs", func(r chi.Router) {
+				r.Get("/pending", app.GetPendingJobsHandler)
+				r.Post("/{job_id}/accept", app.AcceptJobHandler)
+				r.Post("/{job_id}/decline", app.DeclineJobHandler)
+				r.Post("/{job_id}/milestones/{milestone_id}/submit", app.SubmitMilestoneHandler)
+				r.Post("/{job_id}/deliver", app.DeliverJobHandler)
+			})
+			r.Get("/notifications", app.GetAgentNotificationsHandler)
 		})
 	})
 	return r

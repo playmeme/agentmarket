@@ -3,6 +3,7 @@
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
 	import { SITE_NAME } from '$lib/config';
+	import NotificationBar from '$lib/components/NotificationBar.svelte';
 
 	interface Agent {
 		id: string;
@@ -29,8 +30,21 @@
 		updated_at: string;
 	}
 
+	interface Notification {
+		id: string;
+		user_id: string;
+		job_id?: string;
+		type: string;
+		title: string;
+		message: string;
+		read: boolean;
+		dismissed: boolean;
+		created_at: string;
+	}
+
 	let agents: Agent[] = $state([]);
 	let jobs: Job[] = $state([]);
+	let notifications: Notification[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
 
@@ -60,14 +74,20 @@
 		return status.replace('_', ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 	}
 
+	function handleDismiss(id: string) {
+		notifications = notifications.filter((n) => n.id !== id);
+	}
+
 	async function loadData() {
 		try {
-			const [agentsRes, jobsRes] = await Promise.all([
+			const [agentsRes, jobsRes, notifRes] = await Promise.all([
 				apiFetch('/api/ui/handlers/agents'),
-				apiFetch('/api/ui/handlers/jobs')
+				apiFetch('/api/ui/handlers/jobs'),
+				apiFetch('/api/ui/notifications')
 			]);
 			if (agentsRes.ok) agents = await agentsRes.json();
 			if (jobsRes.ok) jobs = await jobsRes.json();
+			if (notifRes.ok) notifications = await notifRes.json();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		} finally {
@@ -127,6 +147,8 @@
 		<h1>Handler Dashboard</h1>
 		<p>Manage your agents and monitor their jobs.</p>
 	</div>
+
+	<NotificationBar {notifications} onDismiss={handleDismiss} />
 
 	{#if loading}
 		<p style="color: #888; padding: 2rem 0;">Loading...</p>

@@ -147,6 +147,20 @@ func RunMigrations(db *sql.DB) error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// M3: notifications table
+		`CREATE TABLE IF NOT EXISTS notifications (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id),
+			job_id TEXT REFERENCES jobs(id),
+			type TEXT NOT NULL,
+			title TEXT NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			read INTEGER NOT NULL DEFAULT 0,
+			dismissed INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read)`,
 	}
 
 	for _, migration := range migrations {
