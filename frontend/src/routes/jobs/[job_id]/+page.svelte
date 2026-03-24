@@ -3,8 +3,20 @@
 	import { page } from '$app/stores';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import SOW from '$lib/components/SOW.svelte';
 	import DeliverySection from '$lib/components/DeliverySection.svelte';
+
+	function renderMarkdown(text: string): string {
+		const raw = marked.parse(text, { async: false }) as string;
+		if (browser) {
+			return DOMPurify.sanitize(raw);
+		}
+		// SSR: return parsed HTML; DOMPurify sanitizes after client hydration
+		return raw;
+	}
 
 	interface SOWData {
 		id?: string;
@@ -146,6 +158,30 @@
 	.badge-awaiting-payment { background: #fef3c7; color: #92400e; }
 	.badge-delivered { background: #dbeafe; color: #1e40af; }
 	.badge-cancelled { background: #fee2e2; color: #991b1b; }
+
+	/* Job brief: rendered markdown */
+	.job-brief {
+		max-width: 640px;
+		color: #444;
+		font-size: 0.95rem;
+		line-height: 1.6;
+	}
+	:global(.job-brief p) { margin: 0 0 0.6em; }
+	:global(.job-brief p:last-child) { margin-bottom: 0; }
+	:global(.job-brief h1),
+	:global(.job-brief h2),
+	:global(.job-brief h3),
+	:global(.job-brief h4) { margin: 0.8em 0 0.3em; font-size: 1rem; font-weight: 600; color: #222; }
+	:global(.job-brief ul),
+	:global(.job-brief ol) { margin: 0 0 0.6em 1.25rem; padding: 0; }
+	:global(.job-brief li) { margin-bottom: 0.2em; }
+	:global(.job-brief code) { background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.875em; }
+	:global(.job-brief pre) { background: #f3f4f6; padding: 0.75rem 1rem; border-radius: 6px; overflow-x: auto; margin: 0 0 0.6em; }
+	:global(.job-brief pre code) { background: none; padding: 0; }
+	:global(.job-brief a) { color: #4f46e5; text-decoration: underline; }
+	:global(.job-brief blockquote) { border-left: 3px solid #d1d5db; margin: 0 0 0.6em 0; padding: 0.25em 0 0.25em 1em; color: #666; }
+	:global(.job-brief strong) { font-weight: 600; }
+	:global(.job-brief hr) { border: none; border-top: 1px solid #e5e7eb; margin: 0.8em 0; }
 </style>
 
 <div class="container page">
@@ -172,7 +208,7 @@
 					<span class="badge {statusBadgeClass(job.status)}">{statusLabel(job.status)}</span>
 				</div>
 				{#if job.description}
-					<p style="margin: 0; color: #666; max-width: 640px;">{job.description}</p>
+					<div class="job-brief">{@html renderMarkdown(job.description)}</div>
 				{/if}
 			</div>
 		</div>
