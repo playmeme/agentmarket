@@ -36,12 +36,20 @@
 		delivery_url?: string;
 	}
 
+	interface Criterion {
+		id: string;
+		milestone_id: string;
+		description: string;
+		is_verified: boolean;
+		created_at: string;
+	}
+
 	interface Milestone {
 		id: string;
 		job_id: string;
 		title: string;
 		amount: number;
-		criteria: string;
+		criteria: Criterion[];
 		status: string;
 		submitted_at: string;
 		approved_at: string;
@@ -295,8 +303,12 @@
 									</span>
 								</div>
 							</div>
-							{#if milestone.criteria}
-								<p style="margin: 0.25rem 0 0; font-size: 0.88rem; color: #666;">{milestone.criteria}</p>
+							{#if milestone.criteria?.length}
+								<ul style="margin: 0.25rem 0 0; padding-left: 1.25rem; font-size: 0.88rem; color: #666;">
+									{#each milestone.criteria as criterion}
+										<li style="margin-bottom: 0.2rem;">{criterion.description}</li>
+									{/each}
+								</ul>
 							{/if}
 						</div>
 					{/each}
