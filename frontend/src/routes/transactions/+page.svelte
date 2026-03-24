@@ -103,12 +103,12 @@
 	</div>
 
 	{#if loading}
-		<p style="color: #888; padding: 2rem 0;">Loading transactions...</p>
+		<p style="color: #888; padding: 2rem 0;">Loading transactions…</p>
 	{:else if error}
 		<div class="alert alert-error">{error}</div>
 	{:else if transactions.length === 0}
 		<div class="card" style="text-align: center; padding: 3rem; color: #888;">
-			<p>No transactions yet.</p>
+			<p>No transactions recorded.</p>
 		</div>
 	{:else}
 		<div style="background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
