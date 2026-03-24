@@ -19,6 +19,7 @@
 		id: string;
 		employer_id: string;
 		agent_id: string;
+		agent_name: string;
 		title: string;
 		description: string;
 		status: string;
@@ -129,7 +130,7 @@
 								{#if isUnassigned(job)}
 									<span style="color: #aaa; font-style: italic; font-size: 0.9rem;">Not assigned</span>
 								{:else}
-									<a href="/agents/{job.agent_id}">Agent #{job.agent_id.slice(0, 8)}</a>
+									<a href="/agents/{job.agent_id}">{job.agent_name || job.agent_id.slice(0, 8)}</a>
 								{/if}
 							</td>
 							<td>
