@@ -54,6 +54,7 @@ func NewRouter(app *App) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Global middlewares (Apply to all routes, including /health)
+	r.Use(chimiddleware.RealIP)
 	r.Use(RequestID)
 	r.Use(chimiddleware.Recoverer)
 
