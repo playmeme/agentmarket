@@ -45,17 +45,17 @@ func requestID(ctx context.Context) string {
 
 func (app *App) JWTAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			slog.Warn("jwt auth failed: missing or invalid header",
+
+		cookie, err := r.Cookie("jwt")
+		if err != nil {
+			slog.Warn("jwt auth failed: missing or invalid jwt cookie", 
 				"request_id", requestID(r.Context()),
 				"path", r.URL.Path,
 			)
-			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
+			writeError(w, http.StatusUnauthorized, "missing or invalid Authorization cookie")
 			return
 		}
-
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenStr := cookie.Value
 
 		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {

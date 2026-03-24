@@ -52,13 +52,39 @@ func (app *App) generateJWT(userID, role string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"role":    role,
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
+		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),  // 30 days, will fix this later
 		"iat":     time.Now().Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(app.Config.JWTSecret)
 }
+
+func setAuthCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "jwt",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   30 * 24 * 60 * 60, // 30 days in seconds
+		HttpOnly: true, // Stop XSS
+		Secure:   true, // Send only over HTTPS (Caddy handles this)
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (app *App) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "jwt",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,  // -1 destroys the cookie in the browser
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	w.WriteHeader(http.StatusOK)
+}
+
 
 func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "signup")
@@ -131,10 +157,11 @@ func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 		log.Info("verification email sent", "user_id", id, "email", req.Email)
 	}
 
+	setAuthCookie(w, token)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(AuthResponse{
-		Token:  token,
 		UserID: id,
 		ID:     id,
 		Role:   req.Role,
@@ -184,9 +211,10 @@ func (app *App) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("login successful", "user_id", id, "email", req.Email, "role", role)
 
+	setAuthCookie(w, token)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{
-		Token:  token,
 		UserID: id,
 		ID:     id,
 		Role:   role,

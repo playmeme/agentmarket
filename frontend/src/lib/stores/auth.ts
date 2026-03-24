@@ -1,7 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
 
 export interface User {
-	token: string;
 	id: string;
 	role: string;
 	name: string;
@@ -13,7 +12,7 @@ function createAuthStore() {
 	const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_user') : null;
 	const initial: User | null = stored ? JSON.parse(stored) : null;
 
-	const { subscribe, set, update } = writable<User | null>(initial);
+	const { subscribe, set } = writable<User | null>(initial);
 
 	return {
 		subscribe,
@@ -29,7 +28,6 @@ function createAuthStore() {
 			}
 			const data = await res.json();
 			const user: User = {
-				token: data.token,
 				id: data.id,
 				role: data.role,
 				name: data.name,
@@ -57,7 +55,6 @@ function createAuthStore() {
 			}
 			const data = await res.json();
 			const user: User = {
-				token: data.token,
 				id: data.id,
 				role: data.role,
 				name: data.name,
@@ -68,6 +65,9 @@ function createAuthStore() {
 			set(user);
 		},
 		logout: () => {
+			// Tell the Go backend to destroy the HttpOnly cookie
+			await fetch('/api/ui/auth/logout', { method: 'POST' });
+
 			localStorage.removeItem('auth_user');
 			set(null);
 		}
@@ -78,13 +78,9 @@ export const auth = createAuthStore();
 
 export const isAuthenticated = derived(auth, ($auth) => $auth !== null);
 
+// The browser will automatically attach the HttpOnly cookie to every fetch request.
 export function apiHeaders(): Record<string, string> {
-	const user = get(auth);
-	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-	if (user?.token) {
-		headers['Authorization'] = `Bearer ${user.token}`;
-	}
-	return headers;
+	return { 'Content-Type': 'application/json' };
 }
 
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {

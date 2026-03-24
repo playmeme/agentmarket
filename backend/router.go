@@ -73,6 +73,7 @@ func NewRouter(app *App) *chi.Mux {
 		r.Post("/api/ui/auth/verify-email", app.VerifyEmailHandler)
 		r.Post("/api/ui/auth/forgot-password", app.ForgotPasswordHandler)
 		r.Post("/api/ui/auth/reset-password", app.ResetPasswordHandler)
+		r.Post("/api/ui/auth/logout", app.LogoutHandler)
 	})
 
 	// Logged routes (Everything else)
