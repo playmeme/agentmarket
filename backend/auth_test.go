@@ -28,14 +28,30 @@ func TestSignup(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if resp.Token == "" {
-		t.Error("expected JWT token in response, got empty string")
-	}
 	if resp.Email != body.Email {
 		t.Errorf("expected email %q, got %q", body.Email, resp.Email)
 	}
 	if resp.Role != body.Role {
 		t.Errorf("expected role %q, got %q", body.Role, resp.Role)
+	}
+
+	// Check for jwtCookie
+	cookies := rr.Result().Cookies()
+	var jwtCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "jwt" {
+			jwtCookie = c
+			break
+		}
+	}
+	if jwtCookie == nil {
+		t.Fatal("expected 'jwt' cookie to be set in response")
+	}
+	if jwtCookie.Value == "" {
+		t.Error("expected 'jwt' cookie to have a value")
+	}
+	if !jwtCookie.HttpOnly {
+		t.Error("expected 'jwt' cookie to be HttpOnly to prevent XSS")
 	}
 
 	// Confirm user exists in DB
@@ -119,8 +135,23 @@ func TestLogin(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode login response: %v", err)
 	}
-	if resp.Token == "" {
-		t.Error("expected JWT token in login response")
+	// Check for jwtCookie
+	cookies := rr.Result().Cookies()
+	var jwtCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "jwt" {
+			jwtCookie = c
+			break
+		}
+	}
+	if jwtCookie == nil {
+		t.Fatal("expected 'jwt' cookie to be set in response")
+	}
+	if jwtCookie.Value == "" {
+		t.Error("expected 'jwt' cookie to have a value")
+	}
+	if !jwtCookie.HttpOnly {
+		t.Error("expected 'jwt' cookie to be HttpOnly to prevent XSS")
 	}
 }
 
@@ -171,6 +202,19 @@ func TestVerifyEmail(t *testing.T) {
 	var signupResp AuthResponse
 	json.Unmarshal(rr.Body.Bytes(), &signupResp)
 
+
+	// Extract the token from the Set-Cookie header instead of the JSON
+	var tokenStr string
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "jwt" {
+			tokenStr = c.Value
+			break
+		}
+	}
+	if tokenStr == "" {
+		t.Fatal("expected jwt cookie from signup to use for verification")
+	}
+
 	// Before verification, email_verified_at should be NULL.
 	var evBefore *string
 	app.DB.QueryRow("SELECT email_verified_at FROM users WHERE id = ?", signupResp.ID).Scan(&evBefore)
@@ -180,7 +224,8 @@ func TestVerifyEmail(t *testing.T) {
 
 	// Call verify-email with the JWT.
 	rr = doRequest(t, router, http.MethodPost, "/api/ui/auth/verify-email",
-		VerifyEmailRequest{Token: signupResp.Token}, "")
+		VerifyEmailRequest{Token: tokenStr}, "")
+
 	if rr.Code != http.StatusOK {
 		t.Fatalf("verify-email: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
