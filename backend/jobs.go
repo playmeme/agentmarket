@@ -1044,6 +1044,52 @@ func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
+// RetractOfferHandler allows an employer to retract a pending job offer.
+// The offer must be in PENDING_ACCEPTANCE status (i.e. sent to an agent but not yet accepted).
+// POST /api/ui/jobs/{id}/retract
+func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "retract_offer")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: retract offer requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can retract offers")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'RETRACTED', agent_id = '', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND employer_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		jobID, employerID,
+	)
+	if err != nil {
+		log.Error("retract offer failed: database error", "job_id", jobID, "employer_id", employerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found, not owned by you, or not in PENDING_ACCEPTANCE status")
+		return
+	}
+
+	log.Info("offer retracted", "job_id", jobID, "employer_id", employerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("retract offer: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
 // TransactionSummary is a lightweight view of a job for transaction listing.
 type TransactionSummary struct {
 	JobID               string `json:"job_id"`

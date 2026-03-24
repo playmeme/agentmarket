@@ -114,6 +114,7 @@ func NewRouter(app *App) *chi.Mux {
 				r.Get("/{job_id}/sow", app.GetSOW)
 				r.Post("/{job_id}/sow/accept", app.AcceptSOW)
 				r.Post("/{job_id}/checkout", app.CreateCheckoutHandler)
+				r.Post("/{id}/retract", app.RetractOfferHandler)
 				r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
 				r.Post("/{job_id}/request-revision", app.RequestRevisionHandler)
 			})
