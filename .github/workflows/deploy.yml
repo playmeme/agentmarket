@@ -196,6 +196,7 @@ jobs:
           target: "${{ env.SITE_TMP }}"
           strip_components: 1
           rm: true
+          timeout: "3m"
 
       - name: Atomic Sync to Live Directory
         uses: appleboy/ssh-action@v1.2.0
