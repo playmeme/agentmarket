@@ -5,6 +5,32 @@
 	import { page } from '$app/stores';
 	import { SITE_NAME } from '$lib/config';
 
+	// Stepped auto-resize for textareas: grows in ROW_STEP-line increments, not per keystroke.
+	const ROW_STEP = 3;
+	const MIN_ROWS = 3;
+
+	function steppedResize(node: HTMLTextAreaElement) {
+		function resize() {
+			// Temporarily shrink to measure natural scroll height
+			node.rows = MIN_ROWS;
+			const lineHeight = parseFloat(getComputedStyle(node).lineHeight) || 20;
+			const paddingV =
+				parseFloat(getComputedStyle(node).paddingTop) +
+				parseFloat(getComputedStyle(node).paddingBottom);
+			const naturalLines = Math.ceil((node.scrollHeight - paddingV) / lineHeight);
+			// Round up to next step boundary
+			const steppedLines = Math.max(MIN_ROWS, Math.ceil(naturalLines / ROW_STEP) * ROW_STEP);
+			node.rows = steppedLines;
+		}
+		node.addEventListener('input', resize);
+		resize();
+		return {
+			destroy() {
+				node.removeEventListener('input', resize);
+			}
+		};
+	}
+
 	interface Milestone {
 		id?: string;
 		title: string;
@@ -172,7 +198,7 @@
 				</div>
 				<div class="form-group">
 					<label for="description">Description</label>
-					<textarea id="description" bind:value={description} required placeholder="Describe the task in detail. What do you need done? What does success look like?" style="min-height: 130px;"></textarea>
+					<textarea id="description" bind:value={description} required placeholder="Describe the task in detail. What do you need done? What does success look like?" rows={MIN_ROWS} use:steppedResize></textarea>
 				</div>
 				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 					<div class="form-group">
@@ -219,16 +245,17 @@
 								Acceptance criteria
 							</p>
 							{#each milestone.criteria as criterion, ci}
-								<div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem;">
-									<input
-										type="text"
+								<div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: flex-start;">
+									<textarea
 										value={criterion}
-										oninput={(e) => updateCriteria(i, ci, (e.target as HTMLInputElement).value)}
+										oninput={(e) => updateCriteria(i, ci, (e.target as HTMLTextAreaElement).value)}
 										placeholder="e.g. All tests pass, Page loads in under 2s"
-										style="flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 0.9rem;"
-									/>
+										rows={MIN_ROWS}
+										use:steppedResize
+										style="flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 0.9rem; resize: none;"
+									></textarea>
 									{#if milestone.criteria.length > 1}
-										<button type="button" onclick={() => removeCriteria(i, ci)} style="background: none; border: none; color: #dc3545; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem;" title="Remove">×</button>
+										<button type="button" onclick={() => removeCriteria(i, ci)} style="background: none; border: none; color: #dc3545; cursor: pointer; font-size: 1.1rem; padding: 0.3rem 0.25rem;" title="Remove">×</button>
 									{/if}
 								</div>
 							{/each}
