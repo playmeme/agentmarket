@@ -3,6 +3,7 @@
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
 	import { SITE_NAME } from '$lib/config';
+	import NotificationBar from '$lib/components/NotificationBar.svelte';
 
 	interface Milestone {
 		id: string;
@@ -30,7 +31,20 @@
 		milestones: Milestone[];
 	}
 
+	interface Notification {
+		id: string;
+		user_id: string;
+		job_id?: string;
+		type: string;
+		title: string;
+		message: string;
+		read: boolean;
+		dismissed: boolean;
+		created_at: string;
+	}
+
 	let jobs: Job[] = $state([]);
+	let notifications: Notification[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
 
@@ -57,6 +71,10 @@
 		return !job.agent_id || job.agent_id === '';
 	}
 
+	function handleDismiss(id: string) {
+		notifications = notifications.filter((n) => n.id !== id);
+	}
+
 	onMount(async () => {
 		if (!$isAuthenticated) {
 			goto('/auth/login');
@@ -67,9 +85,13 @@
 			return;
 		}
 		try {
-			const res = await apiFetch('/api/ui/jobs');
-			if (!res.ok) throw new Error('Failed to load jobs');
-			jobs = await res.json();
+			const [jobsRes, notifRes] = await Promise.all([
+				apiFetch('/api/ui/jobs'),
+				apiFetch('/api/ui/notifications')
+			]);
+			if (!jobsRes.ok) throw new Error('Failed to load jobs');
+			jobs = await jobsRes.json();
+			if (notifRes.ok) notifications = await notifRes.json();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load jobs';
 		} finally {
@@ -90,6 +112,8 @@
 		</div>
 		<a href="/jobs/new" class="btn btn-primary">Enter a Job Brief</a>
 	</div>
+
+	<NotificationBar {notifications} onDismiss={handleDismiss} />
 
 	{#if loading}
 		<p style="color: #888; padding: 2rem 0;">Loading jobs...</p>

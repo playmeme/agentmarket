@@ -260,6 +260,16 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		"milestones", len(req.Milestones),
 	)
 
+	// Notify the agent's handler when a job offer is created with an agent assigned
+	if req.AgentID != "" {
+		var handlerID string
+		if err := app.DB.QueryRow("SELECT handler_id FROM agents WHERE id = ?", req.AgentID).Scan(&handlerID); err == nil {
+			_ = app.CreateNotification(handlerID, jobID, NotifJobOffer,
+				"New job offer: "+req.Title,
+				"You have received a new job offer. Review it on your dashboard.")
+		}
+	}
+
 	job, err := app.getJobDetail(jobID)
 	if err != nil {
 		log.Error("job creation: failed to retrieve after insert", "job_id", jobID, "error", err)
@@ -465,6 +475,16 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("agent assigned to job", "job_id", jobID, "employer_id", employerID, "agent_id", req.AgentID)
 
+	// Notify agent's handler of job offer
+	var handlerID string
+	if err := app.DB.QueryRow("SELECT handler_id FROM agents WHERE id = ?", req.AgentID).Scan(&handlerID); err == nil {
+		var jobTitle string
+		_ = app.DB.QueryRow("SELECT title FROM jobs WHERE id = ?", jobID).Scan(&jobTitle)
+		_ = app.CreateNotification(handlerID, jobID, NotifJobOffer,
+			"New job offer: "+jobTitle,
+			"You have received a new job offer. Review it on your dashboard.")
+	}
+
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		log.Error("assign agent: failed to retrieve after update", "job_id", jobID, "error", err)
@@ -611,6 +631,20 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Notify both parties: employer (confirmation) and agent's handler (milestone completed + payment incoming)
+	_ = app.CreateNotification(employerID, jobID, NotifMilestoneConfirmed,
+		"Milestone approved: "+m.Title,
+		"You approved a milestone. Payment will be processed.")
+
+	var agentHandlerID string
+	if err := app.DB.QueryRow(
+		`SELECT a.handler_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
+	).Scan(&agentHandlerID); err == nil {
+		_ = app.CreateNotification(agentHandlerID, jobID, NotifMilestoneCompleted,
+			"Milestone approved: "+m.Title,
+			"The employer has approved your milestone. Payment is on its way.")
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(m)
 }
@@ -714,12 +748,17 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("job accepted, moved to SOW_NEGOTIATION", "job_id", jobID, "agent_id", agentID, "sow_id", sowID)
 
+	// Notify employer that job offer was accepted
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		log.Error("job accept: failed to retrieve after update", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
+
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifJobOfferAccepted,
+		"Job offer accepted: "+j.Title,
+		"Your job offer has been accepted. SOW negotiation has begun.")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(j)
@@ -750,12 +789,17 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("job declined", "job_id", jobID, "agent_id", agentID)
 
+	// Notify employer that job offer was rejected
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		log.Error("job decline: failed to retrieve after update", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
+
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifJobOfferRejected,
+		"Job offer declined: "+j.Title,
+		"Your job offer was declined by the agent.")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(j)
@@ -822,6 +866,14 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notify employer that a milestone was delivered
+	var employerID string
+	if err := app.DB.QueryRow("SELECT employer_id FROM jobs WHERE id = ?", jobID).Scan(&employerID); err == nil {
+		_ = app.CreateNotification(employerID, jobID, NotifMilestoneDelivered,
+			"Milestone submitted: "+m.Title,
+			"An agent has submitted a milestone for your review.")
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(m)
 }
@@ -872,6 +924,11 @@ func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
+
+	// Notify employer that job was delivered
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifMilestoneDelivered,
+		"Job delivered: "+j.Title,
+		"The agent has delivered the job. Please review and approve or request a revision.")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(j)
@@ -943,6 +1000,24 @@ func (app *App) ApproveDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}
+
+	// Notify agent's handler of payment received and job completion
+	var agentHandlerID string
+	if err := app.DB.QueryRow(
+		`SELECT a.handler_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
+	).Scan(&agentHandlerID); err == nil {
+		_ = app.CreateNotification(agentHandlerID, jobID, NotifPaymentReceived,
+			"Payment received: "+j.Title,
+			"The employer has approved delivery and payment has been captured. Job is complete.")
+		_ = app.CreateNotification(agentHandlerID, jobID, NotifMilestoneConfirmed,
+			"Job complete: "+j.Title,
+			"The job has been marked as completed.")
+	}
+
+	// Notify employer of completion confirmation
+	_ = app.CreateNotification(employerID, jobID, NotifMilestoneConfirmed,
+		"Job complete: "+j.Title,
+		"The job has been completed and payment captured.")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(j)
