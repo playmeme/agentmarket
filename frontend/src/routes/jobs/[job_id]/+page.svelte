@@ -219,6 +219,9 @@
 					<div class="job-brief">{@html renderMarkdown(job.description)}</div>
 				{/if}
 			</div>
+			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
+				<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
+			{/if}
 		</div>
 
 		<!-- Job meta -->
