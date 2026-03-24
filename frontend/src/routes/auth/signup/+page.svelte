@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { SITE_NAME } from '$lib/config';
 
 	let name = $state('');
 	let handle = $state('');
@@ -30,7 +31,7 @@
 </script>
 
 <svelte:head>
-	<title>Sign up — AgentMarket</title>
+	<title>Sign up — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="auth-wrap">

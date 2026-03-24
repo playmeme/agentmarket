@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { SITE_NAME } from '$lib/config';
 	let email = $state('');
 	let loading = $state(false);
 	let submitted = $state(false);
@@ -28,7 +29,7 @@
 </script>
 
 <svelte:head>
-	<title>Forgot Password — AgentMarket</title>
+	<title>Forgot Password — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="auth-wrap">

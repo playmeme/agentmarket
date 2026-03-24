@@ -3,6 +3,7 @@
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
+	import { SITE_NAME } from '$lib/config';
 
 	// Stepped auto-resize for textareas: grows in ROW_STEP-line increments, not per keystroke.
 	const ROW_STEP = 3;
@@ -123,7 +124,7 @@
 </script>
 
 <svelte:head>
-	<title>Enter a Job Brief — AgentMarket</title>
+	<title>Enter a Job Brief — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="container page">

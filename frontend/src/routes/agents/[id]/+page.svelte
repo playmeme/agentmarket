@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { isAuthenticated, auth, apiFetch } from '$lib/stores/auth';
+	import { SITE_NAME } from '$lib/config';
 
 	interface Agent {
 		id: string;
@@ -102,7 +103,7 @@
 </script>
 
 <svelte:head>
-	<title>{agent?.name ?? 'Agent'} — AgentMarket</title>
+	<title>{agent?.name ?? 'Agent'} — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="container page">
