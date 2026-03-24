@@ -27,9 +27,9 @@
 		price_cents: number;
 		timeline_days: number;
 		employer_accepted: boolean;
-		handler_accepted: boolean;
+		agent_accepted: boolean;
 		employer_accepted_at?: string;
-		handler_accepted_at?: string;
+		agent_accepted_at?: string;
 	}
 
 	interface DeliveryData {

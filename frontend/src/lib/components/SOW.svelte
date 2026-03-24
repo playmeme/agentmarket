@@ -9,9 +9,9 @@
 		price_cents: number;
 		timeline_days: number;
 		employer_accepted: boolean;
-		handler_accepted: boolean;
+		agent_accepted: boolean;
 		employer_accepted_at?: string;
-		handler_accepted_at?: string;
+		agent_accepted_at?: string;
 	}
 
 	interface Props {
@@ -142,10 +142,10 @@
 
 	// Check if current user already accepted
 	const userAccepted = $derived(
-		sow && ((isEmployer && sow.employer_accepted) || (isHandler && sow.handler_accepted))
+		sow && ((isEmployer && sow.employer_accepted) || (isHandler && sow.agent_accepted))
 	);
 
-	const bothAccepted = $derived(sow && sow.employer_accepted && sow.handler_accepted);
+	const bothAccepted = $derived(sow && sow.employer_accepted && sow.agent_accepted);
 </script>
 
 <div class="card" style="margin-bottom: 1.5rem;">
@@ -224,8 +224,8 @@
 						<span>Employer: {sow.employer_accepted ? 'Accepted' : 'Pending'}</span>
 					</div>
 					<div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem;">
-						<span style="width: 10px; height: 10px; border-radius: 50%; background: {sow.handler_accepted ? '#10b981' : '#e5e7eb'}; display: inline-block;"></span>
-						<span>Handler: {sow.handler_accepted ? 'Accepted' : 'Pending'}</span>
+						<span style="width: 10px; height: 10px; border-radius: 50%; background: {sow.agent_accepted ? '#10b981' : '#e5e7eb'}; display: inline-block;"></span>
+						<span>Handler: {sow.agent_accepted ? 'Accepted' : 'Pending'}</span>
 					</div>
 				</div>
 			</div>

@@ -52,6 +52,7 @@ type Job struct {
 	CreatedAt           time.Time   `json:"created_at"`
 	UpdatedAt           time.Time   `json:"updated_at"`
 	Milestones          []Milestone `json:"milestones,omitempty"`
+	SOW                 *SOW        `json:"sow"`
 }
 
 // --- Request types ---
@@ -576,6 +577,14 @@ func (app *App) getJobDetail(jobID string) (Job, error) {
 		return j, err
 	}
 	j.Milestones = milestones
+
+	sow, err := app.getSOWByJobID(jobID)
+	if err == nil {
+		j.SOW = &sow
+	} else if err != sql.ErrNoRows {
+		slog.Warn("failed to fetch SOW for job", "job_id", jobID, "error", err)
+	}
+
 	return j, nil
 }
 
