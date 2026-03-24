@@ -9,6 +9,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
+	"time"
 )
 
 // spaHandler implements the http.Handler interface, so we can use it with chi.
@@ -61,6 +63,18 @@ func NewRouter(app *App) *chi.Mux {
 	// Unlogged routes
 	r.Get("/health", healthHandler)
 
+	// Logged and Rate-Limited Public Auth routes
+	r.Group(func(r chi.Router) {
+	    r.Use(middleware.Logger)
+	    r.Use(httprate.LimitByIP(5, 1*time.Minute)) // >5 req/min: "429 Too Many Requests"
+
+		r.Post("/api/ui/auth/signup", app.SignupHandler)
+		r.Post("/api/ui/auth/login", app.LoginHandler)
+		r.Post("/api/ui/auth/verify-email", app.VerifyEmailHandler)
+		r.Post("/api/ui/auth/forgot-password", app.ForgotPasswordHandler)
+		r.Post("/api/ui/auth/reset-password", app.ResetPasswordHandler)
+	})
+
 	// Logged routes (Everything else)
 	r.Group(func(r chi.Router) {
 		r.Use(chimiddleware.Logger)
@@ -71,15 +85,6 @@ func NewRouter(app *App) *chi.Mux {
 			indexPath:  "index.html",
 		}
 		r.Handle("/*", spa)
-
-		// Public routes
-		r.Route("/api/ui/auth", func(r chi.Router) {
-			r.Post("/signup", app.SignupHandler)
-			r.Post("/login", app.LoginHandler)
-			r.Post("/verify-email", app.VerifyEmailHandler)
-			r.Post("/forgot-password", app.ForgotPasswordHandler)
-			r.Post("/reset-password", app.ResetPasswordHandler)
-		})
 
 		// Public agent browsing routes (no auth required)
 		r.Route("/api/ui/agents", func(r chi.Router) {
