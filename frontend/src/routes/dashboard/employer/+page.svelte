@@ -143,11 +143,18 @@
 								{/if}
 							</td>
 							<td>
-								{#if isUnassigned(job)}
-									<a href="/" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap;">
-										Submit to Agent
-									</a>
-								{/if}
+								<div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+									{#if isUnassigned(job)}
+										<a href="/jobs/{job.id}/edit" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap;">
+											Edit
+										</a>
+									{/if}
+									{#if isUnassigned(job)}
+										<a href="/" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap;">
+											Submit to Agent
+										</a>
+									{/if}
+								</div>
 							</td>
 						</tr>
 					{/each}
