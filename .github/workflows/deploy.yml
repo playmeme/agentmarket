@@ -128,7 +128,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          script: mkdir -p ${{ eng.STATIC_TMP }}
+          script: mkdir -p ${{ env.STATIC_TMP }}
 
       - name: Copy Build Artifacts to Temp Directory
         uses: appleboy/scp-action@v0.1.7
@@ -139,7 +139,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           source: "frontend/build/*"
           # Host path that is bind-mounted into the container (see ops/webapp.container Volume=)
-          target: "${{ eng.STATIC_TMP }}"
+          target: "${{ env.STATIC_TMP }}"
           strip_components: 2 # Strips "frontend/build/" from the destination path
           rm: true
           timeout: "3m"
@@ -154,7 +154,7 @@ jobs:
           script: |
             set -e
             # rsync preserves the inode. Both src&dest have trailing slashes.
-            rsync -a --delete ${{ eng.STATIC_TMP }}/ ${{ env.STATIC_DIR }}/
+            rsync -a --delete ${{ env.STATIC_TMP }}/ ${{ env.STATIC_DIR }}/
 
             cd ~/agentmarket/agentmarket.git
             git pull origin main
