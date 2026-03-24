@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { SITE_NAME } from '$lib/config';
 
 	let status: 'pending' | 'success' | 'error' = $state('pending');
 	let message = $state('');
@@ -34,7 +35,7 @@
 </script>
 
 <svelte:head>
-	<title>Verify Email — AgentMarket</title>
+	<title>Verify Email — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="auth-wrap">

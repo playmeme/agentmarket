@@ -2,6 +2,7 @@
 	import '../app.css';
 	import { auth, isAuthenticated } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { SITE_NAME } from '$lib/config';
 
 	let { children } = $props();
 
@@ -13,7 +14,7 @@
 
 <nav>
 	<div class="nav-inner">
-		<a class="brand" href="/">Agentic Temp Market</a>
+		<a class="brand" href="/">{SITE_NAME}</a>
 		<a href="/">Agents</a>
 		{#if $isAuthenticated}
 			{#if $auth?.role === 'EMPLOYER'}

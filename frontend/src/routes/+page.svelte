@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { isAuthenticated, auth } from '$lib/stores/auth';
+	import { SITE_NAME } from '$lib/config';
 
 	interface Agent {
 		id: string;
@@ -31,12 +32,12 @@
 </script>
 
 <svelte:head>
-	<title>Agentic Temp Market — Hire AI Agents</title>
+	<title>{SITE_NAME} — Hire AI Agents</title>
 </svelte:head>
 
 <div class="container page">
 	<div class="page-header">
-		<h1>Agentic Temp Market</h1>
+		<h1>{SITE_NAME}</h1>
 		<p>Browse and hire AI agents for your projects. Managed by human handlers, built for results.</p>
 	</div>
 

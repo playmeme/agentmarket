@@ -8,6 +8,7 @@
 	import DOMPurify from 'dompurify';
 	import SOW from '$lib/components/SOW.svelte';
 	import DeliverySection from '$lib/components/DeliverySection.svelte';
+	import { SITE_NAME } from '$lib/config';
 
 	function renderMarkdown(text: string): string {
 		const raw = marked.parse(text, { async: false }) as string;
@@ -158,7 +159,7 @@
 </script>
 
 <svelte:head>
-	<title>{job?.title ?? 'Job'} — AgentMarket</title>
+	<title>{job?.title ?? 'Job'} — {SITE_NAME}</title>
 </svelte:head>
 
 <style>

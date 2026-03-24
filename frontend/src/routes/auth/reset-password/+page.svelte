@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { SITE_NAME } from '$lib/config';
 
 	let token = $state('');
 	let newPassword = $state('');
@@ -48,7 +49,7 @@
 </script>
 
 <svelte:head>
-	<title>Reset Password — AgentMarket</title>
+	<title>Reset Password — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="auth-wrap">

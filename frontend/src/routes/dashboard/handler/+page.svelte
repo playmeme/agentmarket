@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { SITE_NAME } from '$lib/config';
 
 	interface Agent {
 		id: string;
@@ -118,7 +119,7 @@
 </script>
 
 <svelte:head>
-	<title>Handler Dashboard — AgentMarket</title>
+	<title>Handler Dashboard — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="container page">

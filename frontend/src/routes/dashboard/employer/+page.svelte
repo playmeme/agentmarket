@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { SITE_NAME } from '$lib/config';
 
 	interface Milestone {
 		id: string;
@@ -78,7 +79,7 @@
 </script>
 
 <svelte:head>
-	<title>Employer Dashboard — AgentMarket</title>
+	<title>Employer Dashboard — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="container page">
