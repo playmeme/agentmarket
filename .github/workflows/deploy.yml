@@ -215,15 +215,15 @@ jobs:
   # NOTIFY: Discord Alert (runs after both deploy jobs)
   # ==========================================
   notify:
-    needs: [deploy-backend, deploy-frontend]
+    needs: [deploy-backend, deploy-frontend, deploy-site]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Notify Discord
         uses: rjstone/discord-webhook-notify@v1
         with:
-          text: "Deployed to agentictemp.com (backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }})"
-          details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}"
-          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure') && 'error' || 'info' }}
+          text: "Deployed to agentictemp.com (backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}, site: ${{ needs.deploy-site.result }})"
+          details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}, site: ${{ needs.deploy-site.result }}"
+          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure' || needs.deploy-site.result == 'failure') && 'error' || 'info' }}
           webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
