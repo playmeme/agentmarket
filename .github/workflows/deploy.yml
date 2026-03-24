@@ -102,6 +102,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
+    env:
+      STATIC_TMP: "~/agentmarket/static_tmp"
+      STATIC_DIR: "~/agentmarket/static"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -117,7 +120,17 @@ jobs:
           npm ci
           npm run build
 
-      - name: Copy Build Artifacts to Server
+      - name: Prepare Temp Directory on Server
+        # Need to use a temp dir so we don't change the inode ID of the static dir
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: mkdir -p ${{ eng.STATIC_TMP }}
+
+      - name: Copy Build Artifacts to Temp Directory
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -126,12 +139,12 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           source: "frontend/build/*"
           # Host path that is bind-mounted into the container (see ops/webapp.container Volume=)
-          target: "~/agentmarket/static"
+          target: "${{ eng.STATIC_TMP }}"
           strip_components: 2 # Strips "frontend/build/" from the destination path
-          rm: true # Clean out previous hash-named files in the target dir before copying
+          rm: true
           timeout: "3m"
 
-      - name: Sync Git Repo on Server
+      - name: Atomic Sync to Live Directory & Update Repo
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -140,6 +153,9 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             set -e
+            # rsync preserves the inode. Both src&dest have trailing slashes.
+            rsync -a --delete ${{ eng.STATIC_TMP }}/ ${{ env.STATIC_DIR }}/
+
             cd ~/agentmarket/agentmarket.git
             git pull origin main
 
@@ -154,7 +170,8 @@ jobs:
       - name: Notify Discord
         uses: rjstone/discord-webhook-notify@v1
         with:
-          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure') && 'error' || 'info' }}
+          text: "Deployed to agentictemp.com (backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }})"
           details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}"
+          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure') && 'error' || 'info' }}
           webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
