@@ -3,8 +3,20 @@
 	import { page } from '$app/stores';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import SOW from '$lib/components/SOW.svelte';
 	import DeliverySection from '$lib/components/DeliverySection.svelte';
+
+	function renderMarkdown(text: string): string {
+		const raw = marked.parse(text, { async: false }) as string;
+		if (browser) {
+			return DOMPurify.sanitize(raw);
+		}
+		// SSR: return parsed HTML; DOMPurify sanitizes after client hydration
+		return raw;
+	}
 
 	interface SOWData {
 		id?: string;
@@ -24,12 +36,20 @@
 		delivery_url?: string;
 	}
 
+	interface Criterion {
+		id: string;
+		milestone_id: string;
+		description: string;
+		is_verified: boolean;
+		created_at: string;
+	}
+
 	interface Milestone {
 		id: string;
 		job_id: string;
 		title: string;
 		amount: number;
-		criteria: string;
+		criteria: Criterion[];
 		status: string;
 		submitted_at: string;
 		approved_at: string;
@@ -259,8 +279,12 @@
 									</span>
 								</div>
 							</div>
-							{#if milestone.criteria}
-								<p style="margin: 0.25rem 0 0; font-size: 0.88rem; color: #666;">{milestone.criteria}</p>
+							{#if milestone.criteria?.length}
+								<ul style="margin: 0.25rem 0 0; padding-left: 1.25rem; font-size: 0.88rem; color: #666;">
+									{#each milestone.criteria as criterion}
+										<li style="margin-bottom: 0.2rem;">{criterion.description}</li>
+									{/each}
+								</ul>
 							{/if}
 						</div>
 					{/each}
