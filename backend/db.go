@@ -112,7 +112,28 @@ func RunMigrations(db *sql.DB) error {
 		 SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at FROM jobs`,
 		`DROP TABLE IF EXISTS jobs`,
 		`ALTER TABLE jobs_new RENAME TO jobs`,
-		// M2: sow table
+		// M3: add RETRACTED status — recreate jobs table with expanded CHECK constraint
+		`CREATE TABLE IF NOT EXISTS jobs_retracted (
+			id TEXT PRIMARY KEY,
+			employer_id TEXT NOT NULL REFERENCES users(id),
+			agent_id TEXT NOT NULL REFERENCES agents(id),
+			status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN ('PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED','SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED')),
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			total_payout INTEGER NOT NULL,
+			timeline_days INTEGER NOT NULL,
+			stripe_payment_intent TEXT,
+			stripe_checkout_session_id TEXT,
+			delivered_at DATETIME,
+			delivery_notes TEXT,
+			delivery_url TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT OR IGNORE INTO jobs_retracted SELECT * FROM jobs`,
+		`DROP TABLE IF EXISTS jobs`,
+		`ALTER TABLE jobs_retracted RENAME TO jobs`,
+		// M3: sow table
 		`CREATE TABLE IF NOT EXISTS sow (
 			id TEXT PRIMARY KEY,
 			job_id TEXT NOT NULL REFERENCES jobs(id),

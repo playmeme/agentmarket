@@ -80,6 +80,8 @@
 	let error = $state('');
 	let checkoutLoading = $state(false);
 	let checkoutError = $state('');
+	let retractLoading = $state(false);
+	let retractError = $state('');
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
@@ -93,7 +95,9 @@
 			DELIVERED: 'badge-delivered',
 			COMPLETED: 'badge-completed',
 			PENDING: 'badge-pending',
-			CANCELLED: 'badge-cancelled'
+			PENDING_ACCEPTANCE: 'badge-pending',
+			CANCELLED: 'badge-cancelled',
+			RETRACTED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}
@@ -146,6 +150,24 @@
 			checkoutError = e instanceof Error ? e.message : 'Failed to initiate checkout';
 		} finally {
 			checkoutLoading = false;
+		}
+	}
+
+	async function handleRetractOffer() {
+		if (!confirm('Are you sure you want to retract this offer? The agent will no longer be assigned.')) return;
+		retractLoading = true;
+		retractError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/retract`, { method: 'POST' });
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to retract offer' }));
+				throw new Error(err.error || 'Failed to retract offer');
+			}
+			await loadJob();
+		} catch (e: unknown) {
+			retractError = e instanceof Error ? e.message : 'Failed to retract offer';
+		} finally {
+			retractLoading = false;
 		}
 	}
 
@@ -222,6 +244,21 @@
 			</div>
 			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
 				<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
+			{/if}
+			{#if isEmployer && job.status === 'PENDING_ACCEPTANCE'}
+				<div>
+					{#if retractError}
+						<div class="alert alert-error" style="margin-bottom: 0.5rem;">{retractError}</div>
+					{/if}
+					<button
+						class="btn btn-secondary"
+						style="white-space: nowrap; color: #991b1b; border-color: #fca5a5;"
+						onclick={handleRetractOffer}
+						disabled={retractLoading}
+					>
+						{retractLoading ? 'Retracting…' : 'Retract Offer'}
+					</button>
+				</div>
 			{/if}
 		</div>
 
