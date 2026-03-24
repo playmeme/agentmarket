@@ -42,6 +42,7 @@ type Job struct {
 	ID                  string      `json:"id"`
 	EmployerID          string      `json:"employer_id"`
 	AgentID             string      `json:"agent_id"`
+	AgentName           string      `json:"agent_name,omitempty"`
 	Status              string      `json:"status"`
 	Title               string      `json:"title"`
 	Description         string      `json:"description"`
@@ -143,6 +144,18 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	var stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt)
+	if stripe.Valid {
+		j.StripePaymentIntent = stripe.String
+	}
+	return j, err
+}
+
+// scanJobWithName scans a job row that includes an extra agent_name column at the end.
+func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
+	var j Job
+	var stripe sql.NullString
+	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -484,15 +497,19 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if role == "EMPLOYER" {
+		// JOIN agents so we can return the agent name alongside agent_id
 		rows, err = app.DB.Query(
-			`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
-			 FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`,
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+			 FROM jobs j
+			 LEFT JOIN agents a ON j.agent_id = a.id
+			 WHERE j.employer_id = ?
+			 ORDER BY j.created_at DESC`,
 			userID,
 		)
 	} else {
 		// AGENT_HANDLER: list jobs for any of their agents
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
 			 WHERE a.handler_id = ?
@@ -509,7 +526,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobs := []Job{}
 	for rows.Next() {
-		j, err := app.scanJob(rows)
+		j, err := app.scanJobWithName(rows)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
@@ -523,11 +540,13 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) getJobDetail(jobID string) (Job, error) {
 	row := app.DB.QueryRow(
-		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
-		 FROM jobs WHERE id = ?`,
+		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+		 FROM jobs j
+		 LEFT JOIN agents a ON j.agent_id = a.id
+		 WHERE j.id = ?`,
 		jobID,
 	)
-	j, err := app.scanJob(row)
+	j, err := app.scanJobWithName(row)
 	if err != nil {
 		return j, err
 	}
