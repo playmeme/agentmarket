@@ -65,7 +65,7 @@ func NewRouter(app *App) *chi.Mux {
 
 	// Logged and Rate-Limited Public Auth routes
 	r.Group(func(r chi.Router) {
-	    r.Use(middleware.Logger)
+	    r.Use(chimiddleware.Logger)
 	    r.Use(httprate.LimitByIP(5, 1*time.Minute)) // >5 req/min: "429 Too Many Requests"
 
 		r.Post("/api/ui/auth/signup", app.SignupHandler)
