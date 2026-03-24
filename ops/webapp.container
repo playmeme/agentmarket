@@ -14,15 +14,16 @@ Description=AgentMarket web application
 After=network-online.target
 
 [Container]
+ContainerName=webapp
 Image=localhost/webapp-image
+Pull=never
 PublishPort=8080:8080
 
-# Bind-mount the host static dir into the container.
-# Frontend CI copies built files here; backend serves them from /app/static.
-Volume=%h/agentmarket/static:/app/static:z
+# Backend DB
+Volume=%h/agentmarket/appdata:/srv/data
 
-# Persist the SQLite database outside the container so it survives rebuilds.
-Volume=%h/agentmarket/data:/app/data:z
+# Frontend app files
+Volume=%h/agentmarket/app:/srv/app:ro,z
 
 # Load secrets from a separate env file (written by the backend CI deploy step).
 EnvironmentFile=%h/.config/containers/webapp.env

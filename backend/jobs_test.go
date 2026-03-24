@@ -231,3 +231,94 @@ func TestGetPendingJobs(t *testing.T) {
 		t.Errorf("expected 2 pending jobs, got %d", len(jobs))
 	}
 }
+
+func TestRetractOffer(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _, agentID, _ := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// Create a job with agent assigned (PENDING_ACCEPTANCE)
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Job to retract", TotalPayout: 500, TimelineDays: 3},
+		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "PENDING_ACCEPTANCE" {
+		t.Fatalf("expected PENDING_ACCEPTANCE status, got %q", job.Status)
+	}
+
+	// Retract the offer
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("retract: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var retracted Job
+	json.Unmarshal(rr.Body.Bytes(), &retracted)
+	if retracted.Status != "RETRACTED" {
+		t.Errorf("expected RETRACTED status, got %q", retracted.Status)
+	}
+	if retracted.AgentID != "" {
+		t.Errorf("expected agent_id to be cleared, got %q", retracted.AgentID)
+	}
+
+	// Retracting again should fail (no longer PENDING_ACCEPTANCE)
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("double-retract: expected 404, got %d", rr.Code)
+	}
+}
+
+func TestRetractOfferWrongEmployer(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _, agentID, _ := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// Create a job
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Someone else job", TotalPayout: 100, TimelineDays: 1},
+		employerToken)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Different employer tries to retract
+	otherEmployerID, _ := createVerifiedTestUser(t, app, "EMPLOYER")
+	otherToken := makeAuthToken(t, app, otherEmployerID, "EMPLOYER")
+
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, otherToken)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("wrong employer: expected 404, got %d", rr.Code)
+	}
+}
+
+func TestRetractOfferNonPending(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _, agentID, apiKey := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// Create and accept a job (moves to SOW_NEGOTIATION)
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Accepted job", TotalPayout: 200, TimelineDays: 2},
+		employerToken)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/accept", nil, apiKey)
+
+	// Employer tries to retract after acceptance
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("non-pending retract: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

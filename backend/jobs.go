@@ -42,6 +42,7 @@ type Job struct {
 	ID                  string      `json:"id"`
 	EmployerID          string      `json:"employer_id"`
 	AgentID             string      `json:"agent_id"`
+	AgentName           string      `json:"agent_name,omitempty"`
 	Status              string      `json:"status"`
 	Title               string      `json:"title"`
 	Description         string      `json:"description"`
@@ -143,6 +144,18 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	var stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt)
+	if stripe.Valid {
+		j.StripePaymentIntent = stripe.String
+	}
+	return j, err
+}
+
+// scanJobWithName scans a job row that includes an extra agent_name column at the end.
+func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
+	var j Job
+	var stripe sql.NullString
+	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -504,15 +517,19 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if role == "EMPLOYER" {
+		// JOIN agents so we can return the agent name alongside agent_id
 		rows, err = app.DB.Query(
-			`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
-			 FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`,
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+			 FROM jobs j
+			 LEFT JOIN agents a ON j.agent_id = a.id
+			 WHERE j.employer_id = ?
+			 ORDER BY j.created_at DESC`,
 			userID,
 		)
 	} else {
 		// AGENT_HANDLER: list jobs for any of their agents
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
 			 WHERE a.handler_id = ?
@@ -529,7 +546,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobs := []Job{}
 	for rows.Next() {
-		j, err := app.scanJob(rows)
+		j, err := app.scanJobWithName(rows)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
@@ -543,11 +560,13 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) getJobDetail(jobID string) (Job, error) {
 	row := app.DB.QueryRow(
-		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
-		 FROM jobs WHERE id = ?`,
+		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+		 FROM jobs j
+		 LEFT JOIN agents a ON j.agent_id = a.id
+		 WHERE j.id = ?`,
 		jobID,
 	)
-	j, err := app.scanJob(row)
+	j, err := app.scanJobWithName(row)
 	if err != nil {
 		return j, err
 	}
@@ -1092,6 +1111,52 @@ func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
 		log.Error("request revision: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
+// RetractOfferHandler allows an employer to retract a pending job offer.
+// The offer must be in PENDING_ACCEPTANCE status (i.e. sent to an agent but not yet accepted).
+// POST /api/ui/jobs/{id}/retract
+func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "retract_offer")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: retract offer requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can retract offers")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'RETRACTED', agent_id = '', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND employer_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		jobID, employerID,
+	)
+	if err != nil {
+		log.Error("retract offer failed: database error", "job_id", jobID, "employer_id", employerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found, not owned by you, or not in PENDING_ACCEPTANCE status")
+		return
+	}
+
+	log.Info("offer retracted", "job_id", jobID, "employer_id", employerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("retract offer: failed to retrieve after update", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
 		return
 	}

@@ -20,6 +20,7 @@
 		id: string;
 		employer_id: string;
 		agent_id: string;
+		agent_name: string;
 		title: string;
 		description: string;
 		status: string;
@@ -47,6 +48,8 @@
 	let notifications: Notification[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
+	let retractingJobId = $state<string | null>(null);
+	let retractError = $state('');
 
 	function statusBadge(status: string): string {
 		const map: Record<string, string> = {
@@ -58,7 +61,8 @@
 			COMPLETED: 'badge-completed',
 			PENDING: 'badge-pending',
 			PENDING_ACCEPTANCE: 'badge-pending',
-			CANCELLED: 'badge-cancelled'
+			CANCELLED: 'badge-cancelled',
+			RETRACTED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}
@@ -73,6 +77,26 @@
 
 	function handleDismiss(id: string) {
 		notifications = notifications.filter((n) => n.id !== id);
+	}
+
+	async function retractOffer(jobId: string) {
+		if (!confirm('Are you sure you want to retract this offer?')) return;
+		retractingJobId = jobId;
+		retractError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/retract`, { method: 'POST' });
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to retract offer' }));
+				throw new Error(err.error || 'Failed to retract offer');
+			}
+			// Refresh jobs list
+			const listRes = await apiFetch('/api/ui/jobs');
+			if (listRes.ok) jobs = await listRes.json();
+		} catch (e: unknown) {
+			retractError = e instanceof Error ? e.message : 'Failed to retract offer';
+		} finally {
+			retractingJobId = null;
+		}
 	}
 
 	onMount(async () => {
@@ -115,6 +139,10 @@
 
 	<NotificationBar {notifications} onDismiss={handleDismiss} />
 
+	{#if retractError}
+		<div class="alert alert-error" style="margin-bottom: 1rem;">{retractError}</div>
+	{/if}
+
 	{#if loading}
 		<p style="color: #888; padding: 2rem 0;">Loading jobs...</p>
 	{:else if error}
@@ -153,7 +181,7 @@
 								{#if isUnassigned(job)}
 									<span style="color: #aaa; font-style: italic; font-size: 0.9rem;">Not assigned</span>
 								{:else}
-									<a href="/agents/{job.agent_id}">Agent #{job.agent_id.slice(0, 8)}</a>
+									<a href="/agents/{job.agent_id}">{job.agent_name || job.agent_id.slice(0, 8)}</a>
 								{/if}
 							</td>
 							<td>
@@ -178,6 +206,16 @@
 										<a href="/" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap;">
 											Submit to Agent
 										</a>
+									{/if}
+									{#if job.status === 'PENDING_ACCEPTANCE'}
+										<button
+											class="btn btn-secondary"
+											style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap; color: #991b1b; border-color: #fca5a5;"
+											onclick={() => retractOffer(job.id)}
+											disabled={retractingJobId === job.id}
+										>
+											{retractingJobId === job.id ? 'Retracting…' : 'Retract Offer'}
+										</button>
 									{/if}
 								</div>
 							</td>

@@ -17,6 +17,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      site: ${{ steps.filter.outputs.site }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,6 +33,8 @@ jobs:
               - 'Containerfile'
             frontend:
               - 'frontend/**'
+            site:
+              - 'site/**'
 
   # ==========================================
   # BACKEND: Run Tests & Deploy (Only if backend changed)
@@ -103,8 +106,8 @@ jobs:
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     env:
-      STATIC_TMP: "~/agentmarket/static_tmp"
-      STATIC_DIR: "~/agentmarket/static"
+      APP_TMP: "~/agentmarket/app_tmp"
+      APP_DIR: "~/agentmarket/app"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -128,7 +131,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          script: mkdir -p ${{ env.STATIC_TMP }}
+          script: mkdir -p ${{ env.APP_TMP }}
 
       - name: Copy Build Artifacts to Temp Directory
         uses: appleboy/scp-action@v0.1.7
@@ -139,7 +142,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           source: "frontend/build/*"
           # Host path that is bind-mounted into the container (see ops/webapp.container Volume=)
-          target: "${{ env.STATIC_TMP }}"
+          target: "${{ env.APP_TMP }}"
           strip_components: 2 # Strips "frontend/build/" from the destination path
           rm: true
           timeout: "3m"
@@ -154,8 +157,57 @@ jobs:
           script: |
             set -e
             # rsync preserves the inode. Both src&dest have trailing slashes.
-            rsync -a --delete ${{ env.STATIC_TMP }}/ ${{ env.STATIC_DIR }}/
+            rsync -a --delete ${{ env.APP_TMP }}/ ${{ env.APP_DIR }}/
 
+            cd ~/agentmarket/agentmarket.git
+            git pull origin main
+
+  # ==========================================
+  # STATIC WEB SITE FILES (Served by Caddy)
+  # ==========================================
+  deploy-site:
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SITE_TMP: "~/agentmarket/site_tmp"
+      SITE_DIR: "~/agentmarket/site"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare Temp Directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: mkdir -p ${{ env.SITE_TMP }}
+
+      - name: Copy Files to Temp Directory
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "site/*"
+          target: "${{ env.SITE_TMP }}"
+          strip_components: 1
+          rm: true
+          timeout: "3m"
+
+      - name: Atomic Sync to Live Directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            rsync -a --delete ${{ env.SITE_TMP }}/ ${{ env.SITE_DIR }}/
             cd ~/agentmarket/agentmarket.git
             git pull origin main
 
@@ -163,15 +215,15 @@ jobs:
   # NOTIFY: Discord Alert (runs after both deploy jobs)
   # ==========================================
   notify:
-    needs: [deploy-backend, deploy-frontend]
+    needs: [deploy-backend, deploy-frontend, deploy-site]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Notify Discord
         uses: rjstone/discord-webhook-notify@v1
         with:
-          text: "Deployed to agentictemp.com (backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }})"
-          details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}"
-          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure') && 'error' || 'info' }}
+          text: "Deployed to agentictemp.com (backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}, site: ${{ needs.deploy-site.result }})"
+          details: "Deployment of `${{ github.sha }}` to agentictemp.com — backend: ${{ needs.deploy-backend.result }}, frontend: ${{ needs.deploy-frontend.result }}, site: ${{ needs.deploy-site.result }}"
+          severity: ${{ (needs.deploy-backend.result == 'failure' || needs.deploy-frontend.result == 'failure' || needs.deploy-site.result == 'failure') && 'error' || 'info' }}
           webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
