@@ -272,6 +272,132 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(job)
 }
 
+// UpdateJobHandler updates a job brief (title, description, payout, timeline, milestones).
+// PUT /api/ui/jobs/{id}
+// Only the owning employer may update, and only while no agent is assigned.
+func (app *App) UpdateJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "update_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: update job requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can update jobs")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	// Load existing job to verify ownership and status
+	var existingAgentID sql.NullString
+	var existingEmployerID string
+	err := app.DB.QueryRow(
+		`SELECT employer_id, agent_id FROM jobs WHERE id = ?`, jobID,
+	).Scan(&existingEmployerID, &existingAgentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("update job: database error fetching job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if existingEmployerID != employerID {
+		writeError(w, http.StatusForbidden, "you do not own this job")
+		return
+	}
+	if existingAgentID.Valid && existingAgentID.String != "" {
+		writeError(w, http.StatusConflict, "cannot edit a job that already has an agent assigned")
+		return
+	}
+
+	var req HireRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" || req.TotalPayout == 0 || req.TimelineDays == 0 {
+		writeError(w, http.StatusBadRequest, "title, total_payout, and timeline_days are required")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("update job: begin transaction error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		`UPDATE jobs SET title = ?, description = ?, total_payout = ?, timeline_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		req.Title, req.Description, req.TotalPayout, req.TimelineDays, jobID,
+	)
+	if err != nil {
+		log.Error("update job: update error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update job")
+		return
+	}
+
+	// Delete existing milestones and criteria, then re-insert
+	_, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`, jobID)
+	if err != nil {
+		log.Error("update job: delete criteria error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update milestones")
+		return
+	}
+	_, err = tx.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID)
+	if err != nil {
+		log.Error("update job: delete milestones error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update milestones")
+		return
+	}
+
+	for i, ms := range req.Milestones {
+		msID := uuid.New().String()
+		_, err = tx.Exec(
+			`INSERT INTO milestones (id, job_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
+			msID, jobID, ms.Title, ms.Amount, i,
+		)
+		if err != nil {
+			log.Error("update job: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update milestone")
+			return
+		}
+		for _, criteriaDesc := range ms.Criteria {
+			cID := uuid.New().String()
+			_, err = tx.Exec(
+				`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`,
+				cID, msID, criteriaDesc,
+			)
+			if err != nil {
+				log.Error("update job: criteria insert error", "milestone_id", msID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to update criteria")
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("update job: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	log.Info("job updated", "job_id", jobID, "employer_id", employerID, "title", req.Title)
+
+	job, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("update job: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
+}
+
 // AssignAgentHandler assigns an agent to an existing unassigned job.
 // Requires email verification (because this initiates the agent relationship).
 func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
