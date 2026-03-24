@@ -66,7 +66,7 @@ func NewRouter(app *App) *chi.Mux {
 
 		// Static files
 		spa := spaHandler{
-			staticPath: "./static",
+			staticPath: "./app",
 			indexPath:  "index.html",
 		}
 		r.Handle("/*", spa)
