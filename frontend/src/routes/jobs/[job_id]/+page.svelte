@@ -245,7 +245,7 @@
 			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
 				<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
 			{/if}
-			{#if isEmployer && job.status === 'PENDING_ACCEPTANCE'}
+			{#if isEmployer && ['PENDING_ACCEPTANCE', 'SOW_NEGOTIATION', 'AWAITING_PAYMENT'].includes(job.status)}
 				<div>
 					{#if retractError}
 						<div class="alert alert-error" style="margin-bottom: 0.5rem;">{retractError}</div>
