@@ -84,6 +84,7 @@ export function apiHeaders(): Record<string, string> {
 }
 
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+	// Attempt the initial request (with current cookie token)
 	return fetch(path, {
 		...options,
 		headers: {
@@ -91,4 +92,39 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
 			...(options.headers as Record<string, string> || {})
 		}
 	});
+
+
+	// If it's a 401, the 15-minute JWT likely expired
+	if (res.status === 401) {
+		// To avoid infinite loops, check a custom flag that gets set on the retry
+		const isRetry = (options as any)._isRetry;
+
+		if (!isRetry) {
+			console.log('Access token expired, attempting silent refresh...');
+
+			// Call the Go refresh endpoint
+			// The browser automatically sends the 30-day "refresh" cookie here
+			const refreshRes = await fetch('/api/ui/auth/refresh', { method: 'POST' });
+
+			if (refreshRes.ok) {
+				// Refresh succeeded! Retry original request
+				return fetch(path, {
+					...options,
+					headers: {
+						...apiHeaders(),
+						...(options.headers as Record<string, string> || {})
+					},
+					// Mark this as a retry so we don't loop if the user is truly unauthorized
+					...({ _isRetry: true } as any)
+				});
+			} else {
+				// Refresh failed (30-day token expired or revoked)
+				console.warn('Refresh token expired. Logging out.');
+				auth.logout(); 
+				// Optional: window.location.href = '/auth/login';
+			}
+		}
+	}
+	return res;
 }
+
