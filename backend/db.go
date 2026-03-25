@@ -167,7 +167,6 @@ var migrations = []func(tx *sql.Tx) error{
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)`,
-
 		}
 
 		for _, stmt := range stmts {
@@ -177,6 +176,7 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+}
 
 	// version 1 → 2: add employer_provides column to sow table.
 	// Fresh databases created after migration 0 already have this column
@@ -264,7 +264,6 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
-}
 
 // complexMigration pins a single connection, disables foreign keys for the duration,
 // and passes that connection to fn. Use this for table-rebuild migrations (the
