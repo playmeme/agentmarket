@@ -502,6 +502,7 @@ func (app *App) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 
 	cookie, err := r.Cookie("refresh")
     if err != nil {
+		log.Warn("refresh jwt token failed: missing refresh token")
 		writeError(w, http.StatusUnauthorized, "missing refresh token")
 		return
 	}
@@ -522,6 +523,7 @@ func (app *App) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// If the token is fake, revoked, or expired, reject them.
+		log.Warn("refresh jwt token failed: invalid or expired refresh token", "user_id", userID)
 		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token")
 		return
 	}
@@ -529,12 +531,15 @@ func (app *App) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate a fresh 15-minute Access Token
 	newJWT, err := app.generateJWT(userID, role)
 	if err != nil {
+		log.Warn("refresh jwt token failed: failed to generate token", "user_id", userID)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
 
 	// Update the cookies (giving them the new JWT, and preserving their existing refresh token)
 	setAuthCookies(w, newJWT, plainToken)
+
+	log.Info("refresh jwt token successful", "user_id", userID)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "refreshed"})
