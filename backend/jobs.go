@@ -245,6 +245,8 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	jobID := uuid.New().String()
+	// Use nil for agent_id when empty so SQLite stores NULL rather than an empty
+	// string, which would violate the FOREIGN KEY constraint on agents(id).
 	var agentIDParam interface{}
 	if req.AgentID != "" {
 		agentIDParam = req.AgentID
