@@ -142,9 +142,12 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 
 func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
-	var stripe sql.NullString
-	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+	var agentID, stripe sql.NullString
+	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt)
+	if agentID.Valid {
+		j.AgentID = agentID.String
+	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -154,9 +157,12 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 // scanJobWithName scans a job row that includes an extra agent_name column at the end.
 func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
-	var stripe sql.NullString
-	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+	var agentID, stripe sql.NullString
+	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
+	if agentID.Valid {
+		j.AgentID = agentID.String
+	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -1145,7 +1151,7 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 
 	result, err := app.DB.Exec(
-		`UPDATE jobs SET status = 'RETRACTED', agent_id = '', updated_at = CURRENT_TIMESTAMP
+		`UPDATE jobs SET status = 'RETRACTED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND employer_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, employerID,
 	)
@@ -1224,4 +1230,372 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(transactions)
+}
+
+// --- Milestone management during SOW_NEGOTIATION ---
+
+type MilestoneUpdateRequest struct {
+	Title    string   `json:"title"`
+	Amount   int64    `json:"amount"`
+	Criteria []string `json:"criteria"`
+}
+
+// resetSOWAcceptance clears both agent_accepted and employer_accepted on the SOW for a job.
+// Called whenever milestones change during negotiation so both parties must re-accept.
+func (app *App) resetSOWAcceptance(jobID string) error {
+	_, err := app.DB.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	)
+	return err
+}
+
+// AddMilestoneHandler adds a milestone to a job during SOW_NEGOTIATION.
+// POST /api/ui/jobs/{job_id}/milestones
+func (app *App) AddMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "add_milestone")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	var jobStatus string
+	err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&jobStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("add milestone: db error fetching job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if jobStatus != "SOW_NEGOTIATION" {
+		writeError(w, http.StatusBadRequest, "milestones can only be edited during SOW_NEGOTIATION")
+		return
+	}
+
+	ok, err := app.isJobParticipant(jobID, userID)
+	if err != nil {
+		log.Error("add milestone: db error checking participant", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "not authorized to edit milestones for this job")
+		return
+	}
+
+	var req MilestoneUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	// Determine the next order_index
+	var maxOrder int
+	err = app.DB.QueryRow(`SELECT COALESCE(MAX(order_index), -1) FROM milestones WHERE job_id = ?`, jobID).Scan(&maxOrder)
+	if err != nil {
+		log.Error("add milestone: db error getting max order_index", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("add milestone: begin tx error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	msID := uuid.New().String()
+	_, err = tx.Exec(
+		`INSERT INTO milestones (id, job_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
+		msID, jobID, req.Title, req.Amount, maxOrder+1,
+	)
+	if err != nil {
+		log.Error("add milestone: insert error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to add milestone")
+		return
+	}
+
+	for _, criteriaDesc := range req.Criteria {
+		cID := uuid.New().String()
+		_, err = tx.Exec(`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`, cID, msID, criteriaDesc)
+		if err != nil {
+			log.Error("add milestone: criteria insert error", "milestone_id", msID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to add criteria")
+			return
+		}
+	}
+
+	// Reset SOW acceptance so both parties must re-accept after milestone change
+	_, err = tx.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	)
+	if err != nil {
+		log.Error("add milestone: failed to reset SOW acceptance", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to reset SOW acceptance")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("add milestone: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	log.Info("milestone added", "job_id", jobID, "milestone_id", msID, "user_id", userID)
+
+	job, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("add milestone: failed to retrieve job after insert", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(job)
+}
+
+// EditMilestoneHandler edits an existing milestone during SOW_NEGOTIATION.
+// PUT /api/ui/jobs/{job_id}/milestones/{milestone_id}
+func (app *App) EditMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "edit_milestone")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+	milestoneID := chi.URLParam(r, "milestone_id")
+
+	var jobStatus string
+	err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&jobStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("edit milestone: db error fetching job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if jobStatus != "SOW_NEGOTIATION" {
+		writeError(w, http.StatusBadRequest, "milestones can only be edited during SOW_NEGOTIATION")
+		return
+	}
+
+	ok, err := app.isJobParticipant(jobID, userID)
+	if err != nil {
+		log.Error("edit milestone: db error checking participant", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "not authorized to edit milestones for this job")
+		return
+	}
+
+	// Verify milestone belongs to this job
+	var milestoneJobID string
+	err = app.DB.QueryRow(`SELECT job_id FROM milestones WHERE id = ?`, milestoneID).Scan(&milestoneJobID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "milestone not found")
+		return
+	}
+	if err != nil {
+		log.Error("edit milestone: db error fetching milestone", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneJobID != jobID {
+		writeError(w, http.StatusForbidden, "milestone does not belong to this job")
+		return
+	}
+
+	var req MilestoneUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("edit milestone: begin tx error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		`UPDATE milestones SET title = ?, amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		req.Title, req.Amount, milestoneID,
+	)
+	if err != nil {
+		log.Error("edit milestone: update error", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update milestone")
+		return
+	}
+
+	// Replace criteria
+	if _, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id = ?`, milestoneID); err != nil {
+		log.Error("edit milestone: delete criteria error", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update criteria")
+		return
+	}
+	for _, criteriaDesc := range req.Criteria {
+		cID := uuid.New().String()
+		_, err = tx.Exec(`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`, cID, milestoneID, criteriaDesc)
+		if err != nil {
+			log.Error("edit milestone: criteria insert error", "milestone_id", milestoneID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update criteria")
+			return
+		}
+	}
+
+	// Reset SOW acceptance so both parties must re-accept after milestone change
+	_, err = tx.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	)
+	if err != nil {
+		log.Error("edit milestone: failed to reset SOW acceptance", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to reset SOW acceptance")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("edit milestone: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	log.Info("milestone updated", "job_id", jobID, "milestone_id", milestoneID, "user_id", userID)
+
+	job, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("edit milestone: failed to retrieve job after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
+}
+
+// DeleteMilestoneHandler removes a milestone during SOW_NEGOTIATION.
+// DELETE /api/ui/jobs/{job_id}/milestones/{milestone_id}
+func (app *App) DeleteMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "delete_milestone")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+	milestoneID := chi.URLParam(r, "milestone_id")
+
+	var jobStatus string
+	err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&jobStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Error("delete milestone: db error fetching job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if jobStatus != "SOW_NEGOTIATION" {
+		writeError(w, http.StatusBadRequest, "milestones can only be edited during SOW_NEGOTIATION")
+		return
+	}
+
+	ok, err := app.isJobParticipant(jobID, userID)
+	if err != nil {
+		log.Error("delete milestone: db error checking participant", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "not authorized to edit milestones for this job")
+		return
+	}
+
+	// Verify milestone belongs to this job
+	var milestoneJobID string
+	err = app.DB.QueryRow(`SELECT job_id FROM milestones WHERE id = ?`, milestoneID).Scan(&milestoneJobID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "milestone not found")
+		return
+	}
+	if err != nil {
+		log.Error("delete milestone: db error fetching milestone", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneJobID != jobID {
+		writeError(w, http.StatusForbidden, "milestone does not belong to this job")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("delete milestone: begin tx error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id = ?`, milestoneID); err != nil {
+		log.Error("delete milestone: delete criteria error", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete criteria")
+		return
+	}
+	result, err := tx.Exec(`DELETE FROM milestones WHERE id = ?`, milestoneID)
+	if err != nil {
+		log.Error("delete milestone: delete error", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete milestone")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		_ = tx.Rollback()
+		writeError(w, http.StatusNotFound, "milestone not found")
+		return
+	}
+
+	// Reset SOW acceptance so both parties must re-accept after milestone change
+	_, err = tx.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	)
+	if err != nil {
+		log.Error("delete milestone: failed to reset SOW acceptance", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to reset SOW acceptance")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("delete milestone: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	log.Info("milestone deleted", "job_id", jobID, "milestone_id", milestoneID, "user_id", userID)
+
+	job, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("delete milestone: failed to retrieve job after delete", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
 }
