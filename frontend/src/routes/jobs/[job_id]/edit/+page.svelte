@@ -43,6 +43,8 @@
 	let submitting = $state(false);
 	let error = $state('');
 	let loadError = $state('');
+	let deleting = $state(false);
+	let deleteError = $state('');
 
 	onMount(async () => {
 		if (!$isAuthenticated) {
@@ -111,6 +113,24 @@
 			submitting = false;
 		}
 	}
+
+	async function handleDelete() {
+		if (!confirm('Are you sure you want to permanently delete this job brief? This cannot be undone.')) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}`, { method: 'DELETE' });
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to delete job' }));
+				throw new Error(err.error || 'Failed to delete job');
+			}
+			goto('/dashboard/employer');
+		} catch (e: unknown) {
+			deleteError = e instanceof Error ? e.message : 'Failed to delete job';
+		} finally {
+			deleting = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -171,11 +191,17 @@
 				</div>
 			</div>
 
-			<div style="display: flex; gap: 1rem;">
+			{#if deleteError}
+				<div class="alert alert-error">{deleteError}</div>
+			{/if}
+			<div style="display: flex; gap: 1rem; align-items: center;">
 				<button type="submit" class="btn btn-primary" disabled={submitting}>
 					{submitting ? 'Saving…' : 'Save Changes'}
 				</button>
 				<a href="/jobs/{jobId}" class="btn btn-secondary">Cancel</a>
+				<button type="button" class="btn btn-secondary" style="margin-left: auto; color: #c0392b; border-color: #c0392b;" disabled={deleting} onclick={handleDelete}>
+					{deleting ? 'Deleting…' : 'Delete Job'}
+				</button>
 			</div>
 		</form>
 	{/if}
