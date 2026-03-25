@@ -88,7 +88,7 @@ export function apiHeaders(): Record<string, string> {
 
 export async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
 	// Attempt the initial request (with current cookie token)
-	return fetch(path, {
+	let res = await fetch(path, {
 		...options,
 		headers: {
 			...apiHeaders(),
