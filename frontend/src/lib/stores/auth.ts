@@ -96,9 +96,10 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
 		}
 	});
 
-
 	// If it's a 401, the 15-minute JWT likely expired
 	if (res.status === 401) {
+		console.log("DETECTED 401 in apiFetch for:", path);
+
 		// To avoid infinite loops, check a custom flag that gets set on the retry
 		const isRetry = (options as any)._isRetry;
 
