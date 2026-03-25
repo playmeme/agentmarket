@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -14,15 +16,24 @@ func InitDB(cfg *Config) (*sql.DB, error) {
 		dsn = "./data/agentmarket.db"
 	}
 
+	// Embed PRAGMAs in the DSN so they apply to every connection in the pool,
+	// not just the first one. Fixes #42: foreign_keys was silently disabled for
+	// most requests when set via a standalone db.Exec call.
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	dsn += sep + "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Enable WAL mode for better concurrent performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
+	// Limit the connection pool so SQLite's write-lock contention stays bounded.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	slog.Info("database initialized", "dsn", dsn)
 	return db, nil
