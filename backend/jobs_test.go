@@ -267,10 +267,10 @@ func TestRetractOffer(t *testing.T) {
 		t.Errorf("expected agent_id to be cleared, got %q", retracted.AgentID)
 	}
 
-	// Retracting again should fail (no longer PENDING_ACCEPTANCE)
+	// Retracting again should fail — status is now RETRACTED (not a retractable status)
 	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("double-retract: expected 404, got %d", rr.Code)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("double-retract: expected 409, got %d", rr.Code)
 	}
 }
 
@@ -299,7 +299,9 @@ func TestRetractOfferWrongEmployer(t *testing.T) {
 	}
 }
 
-func TestRetractOfferNonPending(t *testing.T) {
+// TestRetractOfferDuringSowNegotiation verifies that an employer can retract while the
+// job is in SOW_NEGOTIATION (agent has accepted but scope is still being negotiated).
+func TestRetractOfferDuringSowNegotiation(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
 	router := NewRouter(app)
@@ -307,18 +309,70 @@ func TestRetractOfferNonPending(t *testing.T) {
 	employerID, _, agentID, apiKey := setupJobFixtures(t, app)
 	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
 
-	// Create and accept a job (moves to SOW_NEGOTIATION)
+	// Create a job and have the agent accept it (moves to SOW_NEGOTIATION)
 	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
-		HireRequest{AgentID: agentID, Title: "Accepted job", TotalPayout: 200, TimelineDays: 2},
+		HireRequest{AgentID: agentID, Title: "Sow negotiation job", TotalPayout: 300, TimelineDays: 5},
 		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
 	var job Job
 	json.Unmarshal(rr.Body.Bytes(), &job)
 
 	doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/accept", nil, apiKey)
 
-	// Employer tries to retract after acceptance
+	// Verify job is now in SOW_NEGOTIATION
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID, nil, employerToken)
+	var updated Job
+	json.Unmarshal(rr.Body.Bytes(), &updated)
+	if updated.Status != "SOW_NEGOTIATION" {
+		t.Fatalf("expected SOW_NEGOTIATION, got %q", updated.Status)
+	}
+
+	// Employer retracts during negotiation — should succeed
 	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("non-pending retract: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("retract during SOW_NEGOTIATION: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var retracted Job
+	json.Unmarshal(rr.Body.Bytes(), &retracted)
+	if retracted.Status != "RETRACTED" {
+		t.Errorf("expected RETRACTED, got %q", retracted.Status)
+	}
+	if retracted.AgentID != "" {
+		t.Errorf("expected agent_id cleared, got %q", retracted.AgentID)
+	}
+}
+
+// TestRetractOfferFinalContract verifies that retraction is blocked once the contract is
+// final (IN_PROGRESS and beyond — i.e. after payment has been captured).
+func TestRetractOfferFinalContract(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _, agentID, _ := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// Create a job
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Final contract job", TotalPayout: 200, TimelineDays: 2},
+		employerToken)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Force job directly to IN_PROGRESS (simulating completed payment)
+	_, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		job.ID,
+	)
+	if err != nil {
+		t.Fatalf("failed to set job to IN_PROGRESS: %v", err)
+	}
+
+	// Employer tries to retract a final contract — should be blocked
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("final contract retract: expected 409, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

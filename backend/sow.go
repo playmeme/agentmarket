@@ -36,10 +36,10 @@ type SOWMilestoneInput struct {
 }
 
 type SOWRequest struct {
-	DetailedSpec string             `json:"detailed_spec"`
-	WorkProcess  string             `json:"work_process"`
-	PriceCents   int                `json:"price_cents"`
-	TimelineDays int                `json:"timeline_days"`
+	DetailedSpec string              `json:"detailed_spec"`
+	WorkProcess  string              `json:"work_process"`
+	PriceCents   int                 `json:"price_cents"`
+	TimelineDays int                 `json:"timeline_days"`
 	Milestones   []SOWMilestoneInput `json:"milestones"`
 }
 

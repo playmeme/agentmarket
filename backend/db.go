@@ -339,6 +339,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					description TEXT DEFAULT '',
 					total_payout INTEGER NOT NULL,
 					timeline_days INTEGER NOT NULL,
+					sow_link TEXT DEFAULT '',
 					stripe_payment_intent TEXT,
 					stripe_checkout_session_id TEXT,
 					delivered_at DATETIME,
@@ -348,7 +349,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 				)`,
 				`INSERT INTO jobs_new SELECT id, employer_id, NULLIF(agent_id,''), status, title, description,
-				 total_payout, timeline_days, stripe_payment_intent, stripe_checkout_session_id,
+				 total_payout, timeline_days, '' AS sow_link, stripe_payment_intent, stripe_checkout_session_id,
 				 delivered_at, delivery_notes, delivery_url, created_at, updated_at FROM jobs`,
 				`DROP TABLE jobs`,
 				`ALTER TABLE jobs_new RENAME TO jobs`,

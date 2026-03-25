@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	stripe "github.com/stripe/stripe-go/v82"
+	stripesession "github.com/stripe/stripe-go/v82/checkout/session"
 	"github.com/stripe/stripe-go/v82/paymentintent"
 )
 
@@ -115,7 +116,7 @@ func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error
 
 func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	rows, err := app.DB.Query(
-		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE job_id = ? ORDER BY order_index`,
 		jobID,
 	)
@@ -127,7 +128,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	var milestones []Milestone
 	for rows.Next() {
 		var m Milestone
-		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Status,
+		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -158,6 +159,9 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
+	if sowLink.Valid {
+		j.SowLink = sowLink.String
+	}
 	return j, err
 }
 
@@ -175,6 +179,9 @@ func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Jo
 	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
+	}
+	if sowLink.Valid {
+		j.SowLink = sowLink.String
 	}
 	return j, err
 }
@@ -239,9 +246,9 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobID := uuid.New().String()
 	_, err = tx.Exec(
-		`INSERT INTO jobs (id, employer_id, agent_id, title, description, total_payout, timeline_days)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		jobID, employerID, req.AgentID, req.Title, req.Description, req.TotalPayout, req.TimelineDays,
+		`INSERT INTO jobs (id, employer_id, agent_id, title, description, total_payout, timeline_days, sow_link)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		jobID, employerID, req.AgentID, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
 	)
 	if err != nil {
 		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
@@ -252,8 +259,8 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	for i, ms := range req.Milestones {
 		msID := uuid.New().String()
 		_, err = tx.Exec(
-			`INSERT INTO milestones (id, job_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
-			msID, jobID, ms.Title, ms.Amount, i,
+			`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
+			msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
 		)
 		if err != nil {
 			log.Error("job creation failed: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
@@ -371,8 +378,8 @@ func (app *App) UpdateJobHandler(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`UPDATE jobs SET title = ?, description = ?, total_payout = ?, timeline_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		req.Title, req.Description, req.TotalPayout, req.TimelineDays, jobID,
+		`UPDATE jobs SET title = ?, description = ?, total_payout = ?, timeline_days = ?, sow_link = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink, jobID,
 	)
 	if err != nil {
 		log.Error("update job: update error", "job_id", jobID, "error", err)
@@ -397,8 +404,8 @@ func (app *App) UpdateJobHandler(w http.ResponseWriter, r *http.Request) {
 	for i, ms := range req.Milestones {
 		msID := uuid.New().String()
 		_, err = tx.Exec(
-			`INSERT INTO milestones (id, job_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
-			msID, jobID, ms.Title, ms.Amount, i,
+			`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
+			msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
 		)
 		if err != nil {
 			log.Error("update job: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
@@ -1144,8 +1151,14 @@ func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-// RetractOfferHandler allows an employer to retract a pending job offer.
-// The offer must be in PENDING_ACCEPTANCE status (i.e. sent to an agent but not yet accepted).
+// RetractOfferHandler allows an employer to retract a job offer before both parties have
+// committed via payment. Retraction is permitted while the job is in any of:
+//   - PENDING_ACCEPTANCE  — agent has not yet accepted
+//   - SOW_NEGOTIATION     — scope is being negotiated
+//   - AWAITING_PAYMENT    — both parties agreed but employer has not paid
+//
+// Once payment succeeds (status moves to IN_PROGRESS) the contract is final and cannot
+// be retracted.
 // POST /api/ui/jobs/{id}/retract
 func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "retract_offer")
@@ -1160,9 +1173,62 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	employerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "id")
 
+	// Fetch current job status and any outstanding Stripe checkout session ID.
+	var currentStatus string
+	var stripeCheckoutSessionID sql.NullString
+	err := app.DB.QueryRow(
+		`SELECT status, stripe_checkout_session_id FROM jobs WHERE id = ? AND employer_id = ?`,
+		jobID, employerID,
+	).Scan(&currentStatus, &stripeCheckoutSessionID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not owned by you")
+		return
+	}
+	if err != nil {
+		log.Error("retract offer: db error fetching job", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	// Only allow retraction before the contract is final (i.e. before payment).
+	retractableStatuses := map[string]bool{
+		"PENDING_ACCEPTANCE": true,
+		"SOW_NEGOTIATION":    true,
+		"AWAITING_PAYMENT":   true,
+	}
+	if !retractableStatuses[currentStatus] {
+		writeError(w, http.StatusConflict, "cannot retract an offer once the contract is final (job is "+currentStatus+")")
+		return
+	}
+
+	// If the job reached AWAITING_PAYMENT, an open Stripe Checkout Session may exist.
+	// Attempt to expire it so the employer is not charged later. We treat a Stripe
+	// failure as a warning — the DB update still proceeds.
+	if stripeCheckoutSessionID.Valid && stripeCheckoutSessionID.String != "" {
+		stripe.Key = app.Config.StripeSecretKey
+		_, stripeErr := stripesession.Expire(stripeCheckoutSessionID.String, &stripe.CheckoutSessionExpireParams{})
+		if stripeErr != nil {
+			log.Warn("retract offer: could not expire stripe checkout session",
+				"job_id", jobID,
+				"session_id", stripeCheckoutSessionID.String,
+				"error", stripeErr,
+			)
+		} else {
+			log.Info("retract offer: stripe checkout session expired",
+				"job_id", jobID,
+				"session_id", stripeCheckoutSessionID.String,
+			)
+		}
+	}
+
 	result, err := app.DB.Exec(
-		`UPDATE jobs SET status = 'RETRACTED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND employer_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		`UPDATE jobs
+		    SET status = 'RETRACTED',
+		        agent_id = NULL,
+		        stripe_checkout_session_id = NULL,
+		        updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ? AND employer_id = ?
+		    AND status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION', 'AWAITING_PAYMENT')`,
 		jobID, employerID,
 	)
 	if err != nil {
@@ -1173,11 +1239,11 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "job not found, not owned by you, or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusConflict, "job could not be retracted — it may have been updated concurrently")
 		return
 	}
 
-	log.Info("offer retracted", "job_id", jobID, "employer_id", employerID)
+	log.Info("offer retracted", "job_id", jobID, "employer_id", employerID, "previous_status", currentStatus)
 
 	j, err := app.getJobDetail(jobID)
 	if err != nil {

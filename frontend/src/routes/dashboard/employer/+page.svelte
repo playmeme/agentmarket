@@ -207,7 +207,7 @@
 											Submit to Agent
 										</a>
 									{/if}
-									{#if job.status === 'PENDING_ACCEPTANCE'}
+									{#if ['PENDING_ACCEPTANCE', 'SOW_NEGOTIATION', 'AWAITING_PAYMENT'].includes(job.status)}
 										<button
 											class="btn btn-secondary"
 											style="font-size: 0.8rem; padding: 0.25rem 0.75rem; white-space: nowrap; color: #991b1b; border-color: #fca5a5;"
