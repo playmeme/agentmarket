@@ -194,17 +194,40 @@ var migrations = []func(tx *sql.Tx) error{
 		return nil
 	},
 
+	// version 2 → 3: placeholder — this migration is handled by rawMigrations[2]
+	// below because it requires PRAGMA foreign_keys = OFF at the connection level
+	// (not inside a transaction). With _pragma=foreign_keys(1) in the DSN the
+	// connection-level setting overrides any in-transaction PRAGMA, so the
+	// PRAGMA inside a sql.Tx is silently ignored and DROP TABLE jobs fails with
+	// FK constraint errors. complexMigration() pins a raw *sql.Conn and disables
+	// FK enforcement before beginning the transaction.
+	func(tx *sql.Tx) error { return nil },
+}
+
+// rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
+// *sql.Conn via complexMigration) instead of a *sql.Tx. RunMigrations checks
+// this map first; if an entry exists it is used instead of migrations[i].
+var rawMigrations = map[int]func(db *sql.DB) error{
 	// version 2 → 3: make jobs.agent_id nullable so retracted offers can clear it to NULL.
 	// Existing databases have agent_id NOT NULL; we rebuild via rename/copy/drop.
 	// Fresh databases already have the nullable schema from migration 0.
 	// We check table_info to skip the rebuild when agent_id is already nullable.
-	func(tx *sql.Tx) error {
-		// Check current NOT NULL constraint on agent_id.
-		rows, err := tx.Query(`PRAGMA table_info(jobs)`)
+	//
+	// This MUST run outside a transaction (via complexMigration) because SQLite
+	// only respects PRAGMA foreign_keys = OFF when set on the connection, not
+	// inside a transaction. With _pragma=foreign_keys(1) in the DSN, an in-
+	// transaction PRAGMA is silently ignored, causing DROP TABLE jobs to fail
+	// with FK constraint errors from milestones/sow/notifications referencing jobs.
+	2: func(db *sql.DB) error {
+		ctx := context.Background()
+
+		// Idempotency check: if agent_id is already nullable, nothing to do.
+		// Run this outside complexMigration to avoid acquiring an extra connection.
+		agentIDNotNull := false
+		rows, err := db.QueryContext(ctx, `PRAGMA table_info(jobs)`)
 		if err != nil {
 			return fmt.Errorf("migration 2→3: pragma table_info: %w", err)
 		}
-		agentIDNotNull := false
 		for rows.Next() {
 			var cid int
 			var name, colType string
@@ -224,44 +247,57 @@ var migrations = []func(tx *sql.Tx) error{
 			return nil // Already nullable — fresh database, nothing to do.
 		}
 
-		// Disable FK enforcement for this transaction so we can drop and recreate the table.
-		if _, err := tx.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
-			return fmt.Errorf("migration 2→3: disable foreign_keys: %w", err)
-		}
-		stmts := []string{
-			`CREATE TABLE jobs_new (
-				id TEXT PRIMARY KEY,
-				employer_id TEXT NOT NULL REFERENCES users(id),
-				agent_id TEXT REFERENCES agents(id),
-				status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
-					'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
-				)),
-				title TEXT NOT NULL,
-				description TEXT DEFAULT '',
-				total_payout INTEGER NOT NULL,
-				timeline_days INTEGER NOT NULL,
-				stripe_payment_intent TEXT,
-				stripe_checkout_session_id TEXT,
-				delivered_at DATETIME,
-				delivery_notes TEXT,
-				delivery_url TEXT,
-				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-			)`,
-			`INSERT INTO jobs_new SELECT id, employer_id, NULLIF(agent_id,''), status, title, description,
-			 total_payout, timeline_days, stripe_payment_intent, stripe_checkout_session_id,
-			 delivered_at, delivery_notes, delivery_url, created_at, updated_at FROM jobs`,
-			`DROP TABLE jobs`,
-			`ALTER TABLE jobs_new RENAME TO jobs`,
-			`PRAGMA foreign_keys = ON`,
-		}
-		for _, stmt := range stmts {
-			if _, execErr := tx.Exec(stmt); execErr != nil {
-				return fmt.Errorf("migration 2→3 rebuild jobs: %w\nSQL: %s", execErr, stmt)
+		// Use complexMigration to pin a single connection and disable FK
+		// enforcement at the connection level before touching the table.
+		return complexMigration(db, func(conn *sql.Conn) error {
+			// Begin a transaction on the pinned connection for atomicity.
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("migration 2→3: begin tx: %w", err)
 			}
-		}
-		return nil
+
+			stmts := []string{
+				`CREATE TABLE jobs_new (
+					id TEXT PRIMARY KEY,
+					employer_id TEXT NOT NULL REFERENCES users(id),
+					agent_id TEXT REFERENCES agents(id),
+					status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
+						'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+					)),
+					title TEXT NOT NULL,
+					description TEXT DEFAULT '',
+					total_payout INTEGER NOT NULL,
+					timeline_days INTEGER NOT NULL,
+					stripe_payment_intent TEXT,
+					stripe_checkout_session_id TEXT,
+					delivered_at DATETIME,
+					delivery_notes TEXT,
+					delivery_url TEXT,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				`INSERT INTO jobs_new SELECT id, employer_id, NULLIF(agent_id,''), status, title, description,
+				 total_payout, timeline_days, stripe_payment_intent, stripe_checkout_session_id,
+				 delivered_at, delivery_notes, delivery_url, created_at, updated_at FROM jobs`,
+				`DROP TABLE jobs`,
+				`ALTER TABLE jobs_new RENAME TO jobs`,
+			}
+			for _, stmt := range stmts {
+				if _, execErr := tx.Exec(stmt); execErr != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("migration 2→3 rebuild jobs: %w\nSQL: %s", execErr, stmt)
+				}
+			}
+
+			// Bump user_version inside the same transaction for atomicity.
+			if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 2→3: set user_version: %w", err)
+			}
+
+			return tx.Commit()
+		})
 	},
 }
 
@@ -310,6 +346,18 @@ func RunMigrations(db *sql.DB) error {
 
 	for i := current; i < total; i++ {
 		slog.Info("migrations: applying", "version_from", i, "version_to", i+1)
+
+		// rawMigrations entries manage their own connection, transaction, and
+		// user_version bump (required for migrations that need PRAGMA foreign_keys
+		// = OFF at the connection level, which is ignored inside a sql.Tx when
+		// _pragma=foreign_keys(1) is set in the DSN).
+		if rawFn, ok := rawMigrations[i]; ok {
+			if err := rawFn(db); err != nil {
+				return fmt.Errorf("migration %d→%d failed: %w", i, i+1, err)
+			}
+			slog.Info("migrations: applied", "version", i+1)
+			continue
+		}
 
 		tx, err := db.Begin()
 		if err != nil {
