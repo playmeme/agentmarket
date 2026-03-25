@@ -22,8 +22,8 @@
 	interface SOWData {
 		id?: string;
 		job_id: string;
-		scope: string;
-		deliverables: string;
+		detailed_spec: string;
+		work_process: string;
 		price_cents: number;
 		timeline_days: number;
 		employer_accepted: boolean;
@@ -50,6 +50,7 @@
 		job_id: string;
 		title: string;
 		amount: number;
+		deliverables: string;
 		criteria: Criterion[];
 		status: string;
 		submitted_at: string;
@@ -65,6 +66,7 @@
 		status: string;
 		total_payout: number;
 		timeline_days: number;
+		sow_link?: string;
 		stripe_payment_intent?: string;
 		created_at: string;
 		updated_at: string;
@@ -314,6 +316,14 @@
 				{jobId}
 				bind:sow={job.sow}
 				jobStatus={job.status}
+				jobSummary={{
+					title: job.title,
+					description: job.description,
+					total_payout: job.total_payout,
+					timeline_days: job.timeline_days,
+					sow_link: job.sow_link
+				}}
+				milestones={job.milestones}
 				onUpdate={handleSowUpdate}
 			/>
 		{/if}
@@ -328,10 +338,10 @@
 			/>
 		{/if}
 
-		<!-- Milestones -->
-		{#if job.milestones?.length}
+		<!-- Milestones (shown in active/completed jobs with status badges) -->
+		{#if job.milestones?.length && ['IN_PROGRESS', 'DELIVERED', 'COMPLETED'].includes(job.status)}
 			<div class="card" style="margin-bottom: 1.5rem;">
-				<h2 style="margin: 0 0 1rem; font-size: 1.1rem;">Milestones</h2>
+				<h2 style="margin: 0 0 1rem; font-size: 1.1rem;">Milestone Progress</h2>
 				<div style="display: flex; flex-direction: column; gap: 0.75rem;">
 					{#each job.milestones as milestone}
 						<div class="milestone-row">

@@ -5,11 +5,28 @@
 	import { goto } from '$app/navigation';
 	import { SITE_NAME } from '$lib/config';
 
-	interface Milestone {
-		title: string;
-		description: string;
-		payout: number;
-		criteria: string[];
+	// Stepped auto-resize for textareas: grows in ROW_STEP-line increments, not per keystroke.
+	const ROW_STEP = 3;
+	const MIN_ROWS = 3;
+
+	function steppedResize(node: HTMLTextAreaElement) {
+		function resize() {
+			node.rows = MIN_ROWS;
+			const lineHeight = parseFloat(getComputedStyle(node).lineHeight) || 20;
+			const paddingV =
+				parseFloat(getComputedStyle(node).paddingTop) +
+				parseFloat(getComputedStyle(node).paddingBottom);
+			const naturalLines = Math.ceil((node.scrollHeight - paddingV) / lineHeight);
+			const steppedLines = Math.max(MIN_ROWS, Math.ceil(naturalLines / ROW_STEP) * ROW_STEP);
+			node.rows = steppedLines;
+		}
+		node.addEventListener('input', resize);
+		resize();
+		return {
+			destroy() {
+				node.removeEventListener('input', resize);
+			}
+		};
 	}
 
 	interface Agent {
@@ -29,7 +46,7 @@
 	let description = $state('');
 	let payout = $state(0);
 	let timeline = $state('');
-	let milestones: Milestone[] = $state([{ title: '', description: '', payout: 0, criteria: [''] }]);
+	let sowLink = $state('');
 
 	let submitting = $state(false);
 	let error = $state('');
@@ -37,6 +54,10 @@
 	onMount(async () => {
 		if (!$isAuthenticated) {
 			goto('/auth/login');
+			return;
+		}
+		if ($auth?.role !== 'EMPLOYER') {
+			goto('/dashboard/employer');
 			return;
 		}
 		try {
@@ -50,36 +71,6 @@
 		}
 	});
 
-	function addMilestone() {
-		milestones = [...milestones, { title: '', description: '', payout: 0, criteria: [''] }];
-	}
-
-	function removeMilestone(i: number) {
-		milestones = milestones.filter((_, idx) => idx !== i);
-	}
-
-	function addCriteria(milestoneIdx: number) {
-		milestones = milestones.map((m, i) =>
-			i === milestoneIdx ? { ...m, criteria: [...m.criteria, ''] } : m
-		);
-	}
-
-	function removeCriteria(milestoneIdx: number, criteriaIdx: number) {
-		milestones = milestones.map((m, i) =>
-			i === milestoneIdx
-				? { ...m, criteria: m.criteria.filter((_, ci) => ci !== criteriaIdx) }
-				: m
-		);
-	}
-
-	function updateCriteria(milestoneIdx: number, criteriaIdx: number, value: string) {
-		milestones = milestones.map((m, i) =>
-			i === milestoneIdx
-				? { ...m, criteria: m.criteria.map((c, ci) => (ci === criteriaIdx ? value : c)) }
-				: m
-		);
-	}
-
 	async function handleSubmit(e: SubmitEvent) {
 		e.preventDefault();
 		error = '';
@@ -91,11 +82,8 @@
 				description,
 				total_payout: Math.round(Number(payout)),
 				timeline_days: Math.round(Number(timeline)) || 0,
-				milestones: milestones.map((m) => ({
-					title: m.title,
-					amount: Math.round(Number(m.payout || 0)),
-					criteria: m.criteria.filter((c) => c.trim())
-				}))
+				sow_link: sowLink,
+				milestones: []
 			};
 			const res = await apiFetch('/api/ui/jobs/hire', {
 				method: 'POST',
@@ -129,7 +117,7 @@
 
 	<div class="page-header">
 		<h1>Post a job{agent ? ` for ${agent.name}` : ''}</h1>
-		<p>Describe the work, set milestones, and define success criteria.</p>
+		<p>Describe the work at a high level. You can add a detailed Statement of Work together with the Agent after the offer is accepted.</p>
 	</div>
 
 	{#if agentLoading}
@@ -147,8 +135,8 @@
 					<input id="title" type="text" bind:value={title} required placeholder="e.g. Build a landing page, Research competitors" />
 				</div>
 				<div class="form-group">
-					<label for="description">Description</label>
-					<textarea id="description" bind:value={description} required placeholder="Describe the task in detail. What do you need done? What does success look like?" style="min-height: 130px;"></textarea>
+					<label for="description">Brief Description</label>
+					<textarea id="description" bind:value={description} required placeholder="Briefly describe the task. What do you need done?" rows={MIN_ROWS} use:steppedResize></textarea>
 				</div>
 				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 					<div class="form-group">
@@ -163,61 +151,14 @@
 			</div>
 
 			<div class="card" style="margin-bottom: 1.5rem;">
-				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-					<h2 style="margin: 0; font-size: 1.1rem;">Milestones</h2>
-					<button type="button" class="btn btn-secondary" onclick={addMilestone} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
-						+ Add milestone
-					</button>
+				<h2 style="margin: 0 0 0.5rem; font-size: 1.1rem;">Statement of Work</h2>
+				<p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
+					The Statement of Work (SoW) is optional at this stage. After a Job is offered, the Agent can help you fill out the SoW.
+				</p>
+				<div class="form-group" style="margin-bottom: 0;">
+					<label for="sow-link">Link to SoW (optional)</label>
+					<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.example.com/sow" />
 				</div>
-
-				{#each milestones as milestone, i}
-					<div class="milestone-row">
-						<div class="milestone-header">
-							<strong style="font-size: 0.9rem;">Milestone {i + 1}</strong>
-							{#if milestones.length > 1}
-								<button type="button" class="btn btn-danger" onclick={() => removeMilestone(i)} style="font-size: 0.8rem; padding: 0.2rem 0.6rem;">
-									Remove
-								</button>
-							{/if}
-						</div>
-						<div style="display: grid; grid-template-columns: 1fr auto; gap: 0.75rem; align-items: start;">
-							<div class="form-group" style="margin-bottom: 0.5rem;">
-								<label for="m-title-{i}">Title</label>
-								<input id="m-title-{i}" type="text" bind:value={milestone.title} required placeholder="Milestone title" />
-							</div>
-							<div class="form-group" style="margin-bottom: 0.5rem;">
-								<label for="m-payout-{i}">Payout (USD)</label>
-								<input id="m-payout-{i}" type="number" bind:value={milestone.payout} min="0" step="0.01" placeholder="0.00" style="width: 130px;" />
-							</div>
-						</div>
-						<div class="form-group" style="margin-bottom: 0.75rem;">
-							<label for="m-desc-{i}">Description</label>
-							<textarea id="m-desc-{i}" bind:value={milestone.description} placeholder="What needs to happen for this milestone to be complete?" style="min-height: 70px;"></textarea>
-						</div>
-						<div>
-							<p style="font-size: 0.9rem; font-weight: 500; color: #333; margin: 0 0 0.5rem;">
-								Acceptance criteria
-							</p>
-							{#each milestone.criteria as criterion, ci}
-								<div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem;">
-									<input
-										type="text"
-										value={criterion}
-										oninput={(e) => updateCriteria(i, ci, (e.target as HTMLInputElement).value)}
-										placeholder="e.g. All tests pass, Page loads in under 2s"
-										style="flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 0.9rem;"
-									/>
-									{#if milestone.criteria.length > 1}
-										<button type="button" onclick={() => removeCriteria(i, ci)} style="background: none; border: none; color: #dc3545; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem;" title="Remove">×</button>
-									{/if}
-								</div>
-							{/each}
-							<button type="button" onclick={() => addCriteria(i)} style="background: none; border: none; color: #0066cc; cursor: pointer; font-size: 0.85rem; padding: 0.1rem 0; margin-top: 0.2rem;">
-								+ Add criterion
-							</button>
-						</div>
-					</div>
-				{/each}
 			</div>
 
 			<div style="display: flex; gap: 1rem;">

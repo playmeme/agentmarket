@@ -15,9 +15,8 @@ import (
 type SOW struct {
 	ID               string `json:"id"`
 	JobID            string `json:"job_id"`
-	Scope            string `json:"scope"`             // detailed description of the SoW
-	Deliverables     string `json:"deliverables"`      // what the agent delivers
-	EmployerProvides string `json:"employer_provides"` // what the employer provides
+	DetailedSpec     string `json:"detailed_spec"` // detailed specification of work
+	WorkProcess      string `json:"work_process"`  // communication/process description
 	PriceCents       int    `json:"price_cents"`
 	TimelineDays     int    `json:"timeline_days"`
 	AgentAccepted    bool   `json:"agent_accepted"`
@@ -29,12 +28,19 @@ type SOW struct {
 
 // --- Request types ---
 
+type SOWMilestoneInput struct {
+	Title        string   `json:"title"`
+	Amount       int64    `json:"amount"`
+	Deliverables string   `json:"deliverables"`
+	Criteria     []string `json:"criteria"`
+}
+
 type SOWRequest struct {
-	Scope            string `json:"scope"`
-	Deliverables     string `json:"deliverables"`
-	EmployerProvides string `json:"employer_provides"`
-	PriceCents       int    `json:"price_cents"`
-	TimelineDays     int    `json:"timeline_days"`
+	DetailedSpec string             `json:"detailed_spec"`
+	WorkProcess  string             `json:"work_process"`
+	PriceCents   int                `json:"price_cents"`
+	TimelineDays int                `json:"timeline_days"`
+	Milestones   []SOWMilestoneInput `json:"milestones"`
 }
 
 // --- Helpers ---
@@ -44,10 +50,10 @@ func (app *App) getSOWByJobID(jobID string) (SOW, error) {
 	var agentAccepted, employerAccepted int
 	var lastEditedBy sql.NullString
 	err := app.DB.QueryRow(
-		`SELECT id, job_id, scope, deliverables, employer_provides, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by, created_at, updated_at
+		`SELECT id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by, created_at, updated_at
 		 FROM sow WHERE job_id = ?`,
 		jobID,
-	).Scan(&s.ID, &s.JobID, &s.Scope, &s.Deliverables, &s.EmployerProvides, &s.PriceCents, &s.TimelineDays,
+	).Scan(&s.ID, &s.JobID, &s.DetailedSpec, &s.WorkProcess, &s.PriceCents, &s.TimelineDays,
 		&agentAccepted, &employerAccepted, &lastEditedBy, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return s, err
@@ -127,9 +133,9 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 		// Create new SOW
 		sowID := uuid.New().String()
 		_, err = app.DB.Exec(
-			`INSERT INTO sow (id, job_id, scope, deliverables, employer_provides, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
-			sowID, jobID, req.Scope, req.Deliverables, req.EmployerProvides, req.PriceCents, req.TimelineDays, userID,
+			`INSERT INTO sow (id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by)
+			 VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+			sowID, jobID, req.DetailedSpec, req.WorkProcess, req.PriceCents, req.TimelineDays, userID,
 		)
 		if err != nil {
 			log.Error("sow create: insert error", "job_id", jobID, "error", err)
@@ -144,10 +150,10 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Update existing SOW — reset both acceptance flags
 		_, err = app.DB.Exec(
-			`UPDATE sow SET scope = ?, deliverables = ?, employer_provides = ?, price_cents = ?, timeline_days = ?,
+			`UPDATE sow SET detailed_spec = ?, work_process = ?, price_cents = ?, timeline_days = ?,
 			 agent_accepted = 0, employer_accepted = 0, last_edited_by = ?, updated_at = CURRENT_TIMESTAMP
 			 WHERE job_id = ?`,
-			req.Scope, req.Deliverables, req.EmployerProvides, req.PriceCents, req.TimelineDays, userID, jobID,
+			req.DetailedSpec, req.WorkProcess, req.PriceCents, req.TimelineDays, userID, jobID,
 		)
 		if err != nil {
 			log.Error("sow update: exec error", "job_id", jobID, "error", err)
@@ -155,6 +161,44 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Info("SOW updated", "job_id", jobID, "sow_id", existingID, "user_id", userID)
+	}
+
+	// Update milestones if provided in the request
+	if req.Milestones != nil {
+		// Delete existing milestones and criteria for this job, then re-insert
+		if _, err = app.DB.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`, jobID); err != nil {
+			log.Error("sow upsert: delete criteria error", "job_id", jobID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update milestones")
+			return
+		}
+		if _, err = app.DB.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID); err != nil {
+			log.Error("sow upsert: delete milestones error", "job_id", jobID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update milestones")
+			return
+		}
+		for i, ms := range req.Milestones {
+			msID := uuid.New().String()
+			if _, err = app.DB.Exec(
+				`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
+				msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
+			); err != nil {
+				log.Error("sow upsert: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to create milestone")
+				return
+			}
+			for _, criteriaDesc := range ms.Criteria {
+				cID := uuid.New().String()
+				if _, err = app.DB.Exec(
+					`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`,
+					cID, msID, criteriaDesc,
+				); err != nil {
+					log.Error("sow upsert: criteria insert error", "milestone_id", msID, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to create criteria")
+					return
+				}
+			}
+		}
+		log.Info("SOW milestones updated", "job_id", jobID, "count", len(req.Milestones))
 	}
 
 	sow, err := app.getSOWByJobID(jobID)

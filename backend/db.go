@@ -98,6 +98,7 @@ var migrations = []func(tx *sql.Tx) error{
 				description TEXT DEFAULT '',
 				total_payout INTEGER NOT NULL,
 				timeline_days INTEGER NOT NULL,
+				sow_link TEXT DEFAULT '',
 				stripe_payment_intent TEXT,
 				stripe_checkout_session_id TEXT,
 				delivered_at DATETIME,
@@ -113,6 +114,7 @@ var migrations = []func(tx *sql.Tx) error{
 				title TEXT NOT NULL,
 				amount INTEGER NOT NULL,
 				order_index INTEGER NOT NULL,
+				deliverables TEXT NOT NULL DEFAULT '',
 				status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','REVIEW_REQUESTED','APPROVED','PAID')),
 				proof_of_work_url TEXT DEFAULT '',
 				proof_of_work_notes TEXT DEFAULT '',
@@ -131,9 +133,8 @@ var migrations = []func(tx *sql.Tx) error{
 			`CREATE TABLE IF NOT EXISTS sow (
 				id TEXT PRIMARY KEY,
 				job_id TEXT NOT NULL REFERENCES jobs(id),
-				scope TEXT NOT NULL DEFAULT '',
-				deliverables TEXT NOT NULL DEFAULT '',
-				employer_provides TEXT NOT NULL DEFAULT '',
+				detailed_spec TEXT NOT NULL DEFAULT '',
+				work_process TEXT NOT NULL DEFAULT '',
 				price_cents INTEGER NOT NULL DEFAULT 0,
 				timeline_days INTEGER NOT NULL DEFAULT 0,
 				agent_accepted INTEGER NOT NULL DEFAULT 0,
@@ -202,6 +203,75 @@ var migrations = []func(tx *sql.Tx) error{
 	// FK constraint errors. complexMigration() pins a raw *sql.Conn and disables
 	// FK enforcement before beginning the transaction.
 	func(tx *sql.Tx) error { return nil },
+
+	// version 3 → 4: Issue #44 SoW redesign — replace scope/deliverables/employer_provides
+	// with detailed_spec and work_process in the sow table.
+	// Fresh databases created after migration 0 was updated already have detailed_spec
+	// and work_process (and no scope/deliverables columns), so we only copy data when
+	// the old columns exist.
+	func(tx *sql.Tx) error {
+		// Add detailed_spec (replaces scope)
+		if _, err := tx.Exec(`ALTER TABLE sow ADD COLUMN detailed_spec TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add detailed_spec to sow: %w", err)
+			}
+		}
+		// Add work_process (replaces deliverables + employer_provides)
+		if _, err := tx.Exec(`ALTER TABLE sow ADD COLUMN work_process TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add work_process to sow: %w", err)
+			}
+		}
+		// Check if legacy 'scope' column exists before attempting data migration.
+		// On fresh databases (created after migration 0 was updated), 'scope' is absent.
+		hasScopeCol := false
+		rows, err := tx.Query(`PRAGMA table_info(sow)`)
+		if err != nil {
+			return fmt.Errorf("migration 3→4: pragma table_info sow: %w", err)
+		}
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
+				rows.Close()
+				return fmt.Errorf("migration 3→4: scan table_info: %w", scanErr)
+			}
+			if name == "scope" {
+				hasScopeCol = true
+			}
+		}
+		rows.Close()
+		// Only copy old data if the legacy columns exist (existing databases).
+		if hasScopeCol {
+			if _, err := tx.Exec(`UPDATE sow SET detailed_spec = scope, work_process = deliverables WHERE detailed_spec = ''`); err != nil {
+				return fmt.Errorf("migrate sow data: %w", err)
+			}
+		}
+		return nil
+	},
+
+	// version 4 → 5: Issue #44 — add sow_link column to jobs table (optional URL).
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN sow_link TEXT DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add sow_link to jobs: %w", err)
+			}
+		}
+		return nil
+	},
+
+	// version 5 → 6: Issue #44 — add deliverables column to milestones table.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE milestones ADD COLUMN deliverables TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add deliverables to milestones: %w", err)
+			}
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
