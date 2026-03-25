@@ -244,17 +244,23 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	jobID := uuid.New().String()
-	// Use nil for agent_id when empty so SQLite stores NULL rather than an empty
-	// string, which would violate the FOREIGN KEY constraint on agents(id).
-	var agentIDParam interface{}
+	// Coerce empty agent_id to nil so SQLite stores NULL instead of an empty
+	// string. An empty string fails the FK constraint against the agents table
+	// because no agent has id="". This happens when /jobs/new submits without
+	// a pre-selected agent. See: https://github.com/playmeme/agentmarket/issues/56
+	var agentIDVal interface{}
 	if req.AgentID != "" {
-		agentIDParam = req.AgentID
+		agentIDVal = req.AgentID
 	}
+
+	// When no agent is pre-assigned, the job starts with no agent and uses the
+	// default PENDING_ACCEPTANCE status. A separate assign-agent flow will move
+	// the job forward once an agent is selected.
+	jobID := uuid.New().String()
 	_, err = tx.Exec(
 		`INSERT INTO jobs (id, employer_id, agent_id, title, description, total_payout, timeline_days, sow_link)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		jobID, employerID, agentIDParam, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
+		jobID, employerID, agentIDVal, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
 	)
 	if err != nil {
 		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
