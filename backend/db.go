@@ -83,12 +83,12 @@ var migrations = []func(tx *sql.Tx) error{
 				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
 
-			// Final jobs schema: expanded CHECK constraint (all statuses through RETRACTED)
-			// and delivery / stripe-checkout columns added in M2/M3.
+			// Final jobs schema: expanded CHECK constraint (all statuses through RETRACTED).
+			// agent_id is nullable so retracted jobs can set it to NULL (FK-safe in SQLite).
 			`CREATE TABLE IF NOT EXISTS jobs (
 				id TEXT PRIMARY KEY,
 				employer_id TEXT NOT NULL REFERENCES users(id),
-				agent_id TEXT NOT NULL REFERENCES agents(id),
+				agent_id TEXT REFERENCES agents(id),
 				status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
 					'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
 					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
@@ -171,6 +171,48 @@ var migrations = []func(tx *sql.Tx) error{
 		for _, stmt := range stmts {
 			if _, err := tx.Exec(stmt); err != nil {
 				return fmt.Errorf("statement failed: %w\nSQL: %s", err, stmt)
+			}
+		}
+		return nil
+	},
+
+	// version 1 → 2: make agent_id nullable on the jobs table.
+	// RetractOfferHandler sets agent_id = NULL on retraction; with FK enforcement
+	// enabled (PR #45) an empty-string value violated the agents(id) FK. NULL is
+	// exempt from FK checking in SQLite. SQLite cannot ALTER COLUMN so we rebuild
+	// the table using the rename/copy/drop pattern. FK checks must be off for the
+	// duration of the rebuild.
+	func(tx *sql.Tx) error {
+		stmts := []string{
+			`PRAGMA foreign_keys = OFF`,
+			`CREATE TABLE IF NOT EXISTS jobs_fk_fix (
+				id TEXT PRIMARY KEY,
+				employer_id TEXT NOT NULL REFERENCES users(id),
+				agent_id TEXT REFERENCES agents(id),
+				status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
+					'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
+					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+				)),
+				title TEXT NOT NULL,
+				description TEXT DEFAULT '',
+				total_payout INTEGER NOT NULL,
+				timeline_days INTEGER NOT NULL,
+				stripe_payment_intent TEXT,
+				stripe_checkout_session_id TEXT,
+				delivered_at DATETIME,
+				delivery_notes TEXT,
+				delivery_url TEXT,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`INSERT OR IGNORE INTO jobs_fk_fix SELECT * FROM jobs`,
+			`DROP TABLE IF EXISTS jobs`,
+			`ALTER TABLE jobs_fk_fix RENAME TO jobs`,
+			`PRAGMA foreign_keys = ON`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration 1→2 statement failed: %w\nSQL: %s", err, stmt)
 			}
 		}
 		return nil
