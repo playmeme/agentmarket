@@ -83,8 +83,9 @@ var migrations = []func(tx *sql.Tx) error{
 				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
 
-			// Final jobs schema: expanded CHECK constraint (all statuses through RETRACTED).
-			// agent_id is nullable so retracted jobs can set it to NULL (FK-safe in SQLite).
+			// Final jobs schema: expanded CHECK constraint (all statuses through RETRACTED)
+			// and delivery / stripe-checkout columns added in M2/M3.
+			// agent_id is nullable: cleared to NULL when a job offer is retracted.
 			`CREATE TABLE IF NOT EXISTS jobs (
 				id TEXT PRIMARY KEY,
 				employer_id TEXT NOT NULL REFERENCES users(id),
@@ -132,6 +133,7 @@ var migrations = []func(tx *sql.Tx) error{
 				job_id TEXT NOT NULL REFERENCES jobs(id),
 				scope TEXT NOT NULL DEFAULT '',
 				deliverables TEXT NOT NULL DEFAULT '',
+				employer_provides TEXT NOT NULL DEFAULT '',
 				price_cents INTEGER NOT NULL DEFAULT 0,
 				timeline_days INTEGER NOT NULL DEFAULT 0,
 				agent_accepted INTEGER NOT NULL DEFAULT 0,
@@ -165,7 +167,6 @@ var migrations = []func(tx *sql.Tx) error{
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)`,
-
 		}
 
 		for _, stmt := range stmts {
@@ -176,16 +177,59 @@ var migrations = []func(tx *sql.Tx) error{
 		return nil
 	},
 
-	// version 1 → 2: make agent_id nullable on the jobs table.
-	// RetractOfferHandler sets agent_id = NULL on retraction; with FK enforcement
-	// enabled (PR #45) an empty-string value violated the agents(id) FK. NULL is
-	// exempt from FK checking in SQLite. SQLite cannot ALTER COLUMN so we rebuild
-	// the table using the rename/copy/drop pattern. FK checks must be off for the
-	// duration of the rebuild.
+	// version 1 → 2: add employer_provides column to sow table.
+	// Fresh databases created after migration 0 already have this column
+	// (it was added to the CREATE TABLE IF NOT EXISTS statement), so this
+	// migration only needs to run on existing databases that were created
+	// before employer_provides was introduced.
 	func(tx *sql.Tx) error {
+		_, err := tx.Exec(`ALTER TABLE sow ADD COLUMN employer_provides TEXT NOT NULL DEFAULT ''`)
+		if err != nil {
+			// Ignore "duplicate column name" error — column already exists on databases
+			// that were created fresh with migration 0 after the schema was updated.
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("add employer_provides to sow: %w", err)
+			}
+		}
+		return nil
+	},
+
+	// version 2 → 3: make jobs.agent_id nullable so retracted offers can clear it to NULL.
+	// Existing databases have agent_id NOT NULL; we rebuild via rename/copy/drop.
+	// Fresh databases already have the nullable schema from migration 0.
+	// We check table_info to skip the rebuild when agent_id is already nullable.
+	func(tx *sql.Tx) error {
+		// Check current NOT NULL constraint on agent_id.
+		rows, err := tx.Query(`PRAGMA table_info(jobs)`)
+		if err != nil {
+			return fmt.Errorf("migration 2→3: pragma table_info: %w", err)
+		}
+		agentIDNotNull := false
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
+				rows.Close()
+				return fmt.Errorf("migration 2→3: scan table_info: %w", scanErr)
+			}
+			if name == "agent_id" && notNull == 1 {
+				agentIDNotNull = true
+			}
+		}
+		rows.Close()
+		if !agentIDNotNull {
+			return nil // Already nullable — fresh database, nothing to do.
+		}
+
+		// Disable FK enforcement for this transaction so we can drop and recreate the table.
+		if _, err := tx.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("migration 2→3: disable foreign_keys: %w", err)
+		}
 		stmts := []string{
-			`PRAGMA foreign_keys = OFF`,
-			`CREATE TABLE IF NOT EXISTS jobs_fk_fix (
+			`CREATE TABLE jobs_new (
 				id TEXT PRIMARY KEY,
 				employer_id TEXT NOT NULL REFERENCES users(id),
 				agent_id TEXT REFERENCES agents(id),
@@ -205,14 +249,16 @@ var migrations = []func(tx *sql.Tx) error{
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
-			`INSERT OR IGNORE INTO jobs_fk_fix SELECT * FROM jobs`,
-			`DROP TABLE IF EXISTS jobs`,
-			`ALTER TABLE jobs_fk_fix RENAME TO jobs`,
+			`INSERT INTO jobs_new SELECT id, employer_id, NULLIF(agent_id,''), status, title, description,
+			 total_payout, timeline_days, stripe_payment_intent, stripe_checkout_session_id,
+			 delivered_at, delivery_notes, delivery_url, created_at, updated_at FROM jobs`,
+			`DROP TABLE jobs`,
+			`ALTER TABLE jobs_new RENAME TO jobs`,
 			`PRAGMA foreign_keys = ON`,
 		}
 		for _, stmt := range stmts {
-			if _, err := tx.Exec(stmt); err != nil {
-				return fmt.Errorf("migration 1→2 statement failed: %w\nSQL: %s", err, stmt)
+			if _, execErr := tx.Exec(stmt); execErr != nil {
+				return fmt.Errorf("migration 2→3 rebuild jobs: %w\nSQL: %s", execErr, stmt)
 			}
 		}
 		return nil
@@ -292,3 +338,4 @@ func RunMigrations(db *sql.DB) error {
 	slog.Info("migrations complete", "version", total)
 	return nil
 }
+
