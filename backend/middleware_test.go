@@ -134,7 +134,7 @@ func TestAPIKeyAuthInvalid(t *testing.T) {
 	app := setupTestApp(t)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+plainKey)
+	req.Header.Set("Authorization", "Bearer invalidkeyvalue")
 	rr := httptest.NewRecorder()
 	app.APIKeyAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
