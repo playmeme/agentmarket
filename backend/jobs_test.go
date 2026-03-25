@@ -89,10 +89,13 @@ func TestHireAgentNoAgentID(t *testing.T) {
 		t.Fatalf("decode job: %v", err)
 	}
 	if job.ID == "" {
-		t.Error("expected job ID")
+		t.Error("expected job ID to be non-empty")
 	}
 	if job.AgentID != "" {
-		t.Errorf("expected empty agent_id, got %q", job.AgentID)
+		t.Errorf("expected agent_id to be empty, got %q", job.AgentID)
+	}
+	if job.Status != "PENDING_ACCEPTANCE" {
+		t.Errorf("expected status PENDING_ACCEPTANCE, got %q", job.Status)
 	}
 }
 
