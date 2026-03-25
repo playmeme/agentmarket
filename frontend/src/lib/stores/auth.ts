@@ -64,7 +64,7 @@ function createAuthStore() {
 			localStorage.setItem('auth_user', JSON.stringify(user));
 			set(user);
 		},
-		logout: () => {
+		logout: async () => {
 			// Tell the Go backend to destroy the HttpOnly cookie
 			try {
 				await fetch('/api/ui/auth/logout', { method: 'POST' });
