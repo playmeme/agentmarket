@@ -222,33 +222,18 @@ var migrations = []func(tx *sql.Tx) error{
 				return fmt.Errorf("add work_process to sow: %w", err)
 			}
 		}
-		// Check if legacy 'scope' column exists before attempting data migration.
-		// On fresh databases (created after migration 0 was updated), 'scope' is absent.
-		hasScopeCol := false
-		rows, err := tx.Query(`PRAGMA table_info(sow)`)
-		if err != nil {
-			return fmt.Errorf("migration 3→4: pragma table_info sow: %w", err)
-		}
-		for rows.Next() {
-			var cid int
-			var name, colType string
-			var notNull int
-			var dfltValue interface{}
-			var pk int
-			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
-				rows.Close()
-				return fmt.Errorf("migration 3→4: scan table_info: %w", scanErr)
-			}
-			if name == "scope" {
-				hasScopeCol = true
-			}
-		}
-		rows.Close()
-		// Only copy old data if the legacy columns exist (existing databases).
-		if hasScopeCol {
-			if _, err := tx.Exec(`UPDATE sow SET detailed_spec = scope, work_process = deliverables WHERE detailed_spec = ''`); err != nil {
+		// Copy legacy data from scope/deliverables into the new columns.
+		// On fresh databases (created after migration 0 was updated) the old
+		// scope/deliverables columns never existed, so this UPDATE will return
+		// "no such column: scope" — that's expected and we treat it as a no-op.
+		// We avoid PRAGMA table_info here because its behaviour inside a
+		// transaction that already has failed DDL statements is unreliable across
+		// SQLite driver versions.
+		if _, err := tx.Exec(`UPDATE sow SET detailed_spec = scope, work_process = deliverables WHERE detailed_spec = ''`); err != nil {
+			if !strings.Contains(err.Error(), "no such column") {
 				return fmt.Errorf("migrate sow data: %w", err)
 			}
+			// "no such column: scope" — fresh database, nothing to migrate.
 		}
 		return nil
 	},

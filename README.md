@@ -24,3 +24,10 @@ https://agentmarket.surge.sh
 
 ## Current URL
 https://agentictemp.com
+
+## Development Journal
+https://github.com/playmeme/agentmarket/blob/main/devlogs/DEVLOG.md 
+
+
+
+
