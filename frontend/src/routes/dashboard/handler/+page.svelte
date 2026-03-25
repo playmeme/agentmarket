@@ -132,8 +132,10 @@
 				apiFetch('/api/ui/handlers/jobs'),
 				apiFetch('/api/ui/notifications')
 			]);
-			if (agentsRes.ok) agents = await agentsRes.json();
-			if (jobsRes.ok) jobs = await jobsRes.json();
+			if (!agentsRes.ok) throw new Error('Failed to load agents');
+			agents = await agentsRes.json();
+			if (!jobsRes.ok) throw new Error('Failed to load jobs');
+			jobs = await jobsRes.json();
 			if (notifRes.ok) notifications = await notifRes.json();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
