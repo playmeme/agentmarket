@@ -1687,3 +1687,99 @@ func (app *App) DeleteMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(job)
 }
+
+// DeleteJobHandler permanently deletes a job brief and all its child records.
+// Deletion is only permitted when no agent has been assigned (agent_id IS NULL).
+// DELETE /api/ui/jobs/{id}
+func (app *App) DeleteJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "delete_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "EMPLOYER" {
+		log.Warn("authz failure: delete job requires EMPLOYER role", "role", role)
+		writeError(w, http.StatusForbidden, "only EMPLOYER role can delete jobs")
+		return
+	}
+
+	employerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	// Verify ownership and that no agent is assigned.
+	var exists int
+	err := app.DB.QueryRow(
+		`SELECT 1 FROM jobs WHERE id = ? AND employer_id = ? AND agent_id IS NULL`,
+		jobID, employerID,
+	).Scan(&exists)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found, not owned by you, or an agent is already assigned")
+		return
+	}
+	if err != nil {
+		log.Error("delete job: db error checking ownership", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("delete job: begin tx error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	// Delete child rows in dependency order.
+	if _, err = tx.Exec(
+		`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`,
+		jobID,
+	); err != nil {
+		log.Error("delete job: failed to delete criteria", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	if _, err = tx.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID); err != nil {
+		log.Error("delete job: failed to delete milestones", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	if _, err = tx.Exec(`DELETE FROM sow WHERE job_id = ?`, jobID); err != nil {
+		log.Error("delete job: failed to delete sow", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	if _, err = tx.Exec(`DELETE FROM notifications WHERE job_id = ?`, jobID); err != nil {
+		log.Error("delete job: failed to delete notifications", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	result, err := tx.Exec(
+		`DELETE FROM jobs WHERE id = ? AND employer_id = ? AND agent_id IS NULL`,
+		jobID, employerID,
+	)
+	if err != nil {
+		log.Error("delete job: failed to delete job row", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete job")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		_ = tx.Rollback()
+		writeError(w, http.StatusConflict, "job could not be deleted — it may have been updated concurrently")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("delete job: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	log.Info("job deleted", "job_id", jobID, "employer_id", employerID)
+
+	w.WriteHeader(http.StatusNoContent)
+}

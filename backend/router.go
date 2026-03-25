@@ -116,6 +116,7 @@ func NewRouter(app *App) *chi.Mux {
 				r.Get("/", app.ListJobsHandler)
 				r.Get("/{id}", app.GetJobHandler)
 				r.Put("/{id}", app.UpdateJobHandler)
+				r.Delete("/{id}", app.DeleteJobHandler)
 				r.Post("/{id}/assign", app.AssignAgentHandler)
 				r.Post("/{job_id}/milestones", app.AddMilestoneHandler)
 				r.Put("/{job_id}/milestones/{milestone_id}", app.EditMilestoneHandler)
