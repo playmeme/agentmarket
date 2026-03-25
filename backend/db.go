@@ -207,7 +207,8 @@ var migrations = []func(tx *sql.Tx) error{
 	// version 3 → 4: Issue #44 SoW redesign — replace scope/deliverables/employer_provides
 	// with detailed_spec and work_process in the sow table.
 	// Fresh databases created after migration 0 was updated already have detailed_spec
-	// and work_process, so we handle the duplicate-column case gracefully.
+	// and work_process (and no scope/deliverables columns), so we only copy data when
+	// the old columns exist.
 	func(tx *sql.Tx) error {
 		// Add detailed_spec (replaces scope)
 		if _, err := tx.Exec(`ALTER TABLE sow ADD COLUMN detailed_spec TEXT NOT NULL DEFAULT ''`); err != nil {
@@ -221,9 +222,33 @@ var migrations = []func(tx *sql.Tx) error{
 				return fmt.Errorf("add work_process to sow: %w", err)
 			}
 		}
-		// Copy existing data: scope → detailed_spec, deliverables + employer_provides → work_process
-		if _, err := tx.Exec(`UPDATE sow SET detailed_spec = COALESCE(scope, ''), work_process = COALESCE(deliverables, '') WHERE detailed_spec = ''`); err != nil {
-			return fmt.Errorf("migrate sow data: %w", err)
+		// Check if legacy 'scope' column exists before attempting data migration.
+		// On fresh databases (created after migration 0 was updated), 'scope' is absent.
+		hasScopeCol := false
+		rows, err := tx.Query(`PRAGMA table_info(sow)`)
+		if err != nil {
+			return fmt.Errorf("migration 3→4: pragma table_info sow: %w", err)
+		}
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
+				rows.Close()
+				return fmt.Errorf("migration 3→4: scan table_info: %w", scanErr)
+			}
+			if name == "scope" {
+				hasScopeCol = true
+			}
+		}
+		rows.Close()
+		// Only copy old data if the legacy columns exist (existing databases).
+		if hasScopeCol {
+			if _, err := tx.Exec(`UPDATE sow SET detailed_spec = scope, work_process = deliverables WHERE detailed_spec = ''`); err != nil {
+				return fmt.Errorf("migrate sow data: %w", err)
+			}
 		}
 		return nil
 	},

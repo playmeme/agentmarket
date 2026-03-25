@@ -1,11 +1,35 @@
 <script lang="ts">
 	import { apiFetch, auth } from '$lib/stores/auth';
 
+	// Stepped auto-resize for textareas
+	const ROW_STEP = 3;
+	const MIN_ROWS = 3;
+
+	function steppedResize(node: HTMLTextAreaElement) {
+		function resize() {
+			node.rows = MIN_ROWS;
+			const lineHeight = parseFloat(getComputedStyle(node).lineHeight) || 20;
+			const paddingV =
+				parseFloat(getComputedStyle(node).paddingTop) +
+				parseFloat(getComputedStyle(node).paddingBottom);
+			const naturalLines = Math.ceil((node.scrollHeight - paddingV) / lineHeight);
+			const steppedLines = Math.max(MIN_ROWS, Math.ceil(naturalLines / ROW_STEP) * ROW_STEP);
+			node.rows = steppedLines;
+		}
+		node.addEventListener('input', resize);
+		resize();
+		return {
+			destroy() {
+				node.removeEventListener('input', resize);
+			}
+		};
+	}
+
 	interface SOWData {
 		id?: string;
 		job_id: string;
-		scope: string;
-		deliverables: string;
+		detailed_spec: string;
+		work_process: string;
 		price_cents: number;
 		timeline_days: number;
 		employer_accepted: boolean;
@@ -14,14 +38,33 @@
 		agent_accepted_at?: string;
 	}
 
+	interface MilestoneData {
+		id?: string;
+		title: string;
+		amount: number;
+		deliverables: string;
+		criteria: Array<{ id?: string; description: string }>;
+		status?: string;
+	}
+
+	interface JobSummary {
+		title: string;
+		description: string;
+		total_payout: number;
+		timeline_days: number;
+		sow_link?: string;
+	}
+
 	interface Props {
 		jobId: string;
 		sow: SOWData | null;
 		jobStatus: string;
+		jobSummary?: JobSummary | null;
+		milestones?: MilestoneData[];
 		onUpdate?: () => void;
 	}
 
-	let { jobId, sow = $bindable(), jobStatus, onUpdate }: Props = $props();
+	let { jobId, sow = $bindable(), jobStatus, jobSummary = null, milestones = [], onUpdate }: Props = $props();
 
 	let editing = $state(false);
 	let saving = $state(false);
@@ -30,11 +73,20 @@
 	let error = $state('');
 	let successMsg = $state('');
 
-	// Edit form state
-	let editScope = $state('');
-	let editDeliverables = $state('');
+	// Edit form state — SoW fields
+	let editDetailedSpec = $state('');
+	let editWorkProcess = $state('');
 	let editPriceDollars = $state('');
 	let editTimelineDays = $state('');
+
+	// Edit form state — milestones
+	interface EditMilestone {
+		title: string;
+		payout: number;
+		deliverables: string;
+		criteria: string[];
+	}
+	let editMilestones: EditMilestone[] = $state([]);
 
 	function formatCentsToDollars(cents: number): string {
 		return (cents / 100).toFixed(2);
@@ -42,15 +94,28 @@
 
 	function startEdit() {
 		if (sow) {
-			editScope = sow.scope;
-			editDeliverables = sow.deliverables;
+			editDetailedSpec = sow.detailed_spec;
+			editWorkProcess = sow.work_process;
 			editPriceDollars = formatCentsToDollars(sow.price_cents);
 			editTimelineDays = String(sow.timeline_days);
 		} else {
-			editScope = '';
-			editDeliverables = '';
+			editDetailedSpec = '';
+			editWorkProcess = '';
 			editPriceDollars = '';
 			editTimelineDays = '';
+		}
+		// Populate milestones from existing data
+		if (milestones && milestones.length > 0) {
+			editMilestones = milestones.map((m) => ({
+				title: m.title,
+				payout: m.amount,
+				deliverables: m.deliverables ?? '',
+				criteria: m.criteria && m.criteria.length > 0
+					? m.criteria.map((c) => c.description)
+					: ['']
+			}));
+		} else {
+			editMilestones = [{ title: '', payout: 0, deliverables: '', criteria: [''] }];
 		}
 		editing = true;
 		error = '';
@@ -61,19 +126,60 @@
 		error = '';
 	}
 
+	// Milestone helpers
+	function addMilestone() {
+		editMilestones = [...editMilestones, { title: '', payout: 0, deliverables: '', criteria: [''] }];
+	}
+
+	function removeMilestone(i: number) {
+		editMilestones = editMilestones.filter((_, idx) => idx !== i);
+	}
+
+	function addCriteria(milestoneIdx: number) {
+		editMilestones = editMilestones.map((m, i) =>
+			i === milestoneIdx ? { ...m, criteria: [...m.criteria, ''] } : m
+		);
+	}
+
+	function removeCriteria(milestoneIdx: number, criteriaIdx: number) {
+		editMilestones = editMilestones.map((m, i) =>
+			i === milestoneIdx
+				? { ...m, criteria: m.criteria.filter((_, ci) => ci !== criteriaIdx) }
+				: m
+		);
+	}
+
+	function updateCriteria(milestoneIdx: number, criteriaIdx: number, value: string) {
+		editMilestones = editMilestones.map((m, i) =>
+			i === milestoneIdx
+				? { ...m, criteria: m.criteria.map((c, ci) => (ci === criteriaIdx ? value : c)) }
+				: m
+		);
+	}
+
+	function addDeliverable(milestoneIdx: number) {
+		// Deliverables is a free-text textarea, handled directly
+	}
+
 	async function saveSow() {
 		saving = true;
 		error = '';
 		successMsg = '';
 		try {
-			const priceCents = Math.round(parseFloat(editPriceDollars) * 100);
+			const priceCents = Math.round(parseFloat(editPriceDollars) * 100) || 0;
 			const res = await apiFetch(`/api/ui/jobs/${jobId}/sow`, {
 				method: 'POST',
 				body: JSON.stringify({
-					scope: editScope,
-					deliverables: editDeliverables,
+					detailed_spec: editDetailedSpec,
+					work_process: editWorkProcess,
 					price_cents: priceCents,
-					timeline_days: parseInt(editTimelineDays) || 0
+					timeline_days: parseInt(editTimelineDays) || 0,
+					milestones: editMilestones.map((m) => ({
+						title: m.title,
+						amount: Math.round(Number(m.payout || 0)),
+						deliverables: m.deliverables,
+						criteria: m.criteria.filter((c) => c.trim())
+					}))
 				})
 			});
 			if (!res.ok) {
@@ -148,12 +254,50 @@
 	const bothAccepted = $derived(sow && sow.employer_accepted && sow.agent_accepted);
 </script>
 
+<!-- Job section (read-only summary) -->
+{#if jobSummary}
+<div class="card" style="margin-bottom: 1.5rem;">
+	<h2 style="margin: 0 0 1rem; font-size: 1.1rem;">Job</h2>
+	<div style="display: grid; gap: 0.75rem;">
+		<div>
+			<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Title</p>
+			<p style="margin: 0; color: #1a1a1a; font-weight: 500;">{jobSummary.title}</p>
+		</div>
+		{#if jobSummary.description}
+			<div>
+				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Brief Description</p>
+				<p style="margin: 0; color: #333; white-space: pre-wrap;">{jobSummary.description}</p>
+			</div>
+		{/if}
+		<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+			<div>
+				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Total Payout</p>
+				<p style="margin: 0; font-size: 1.05rem; font-weight: 600;">${jobSummary.total_payout.toFixed(2)}</p>
+			</div>
+			{#if jobSummary.timeline_days}
+				<div>
+					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Timeline</p>
+					<p style="margin: 0;">{jobSummary.timeline_days} day{jobSummary.timeline_days !== 1 ? 's' : ''}</p>
+				</div>
+			{/if}
+		</div>
+		{#if jobSummary.sow_link}
+			<div>
+				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">SoW Reference</p>
+				<a href={jobSummary.sow_link} target="_blank" rel="noopener noreferrer" style="color: #4f46e5; word-break: break-all;">{jobSummary.sow_link}</a>
+			</div>
+		{/if}
+	</div>
+</div>
+{/if}
+
+<!-- SoW section -->
 <div class="card" style="margin-bottom: 1.5rem;">
 	<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
 		<h2 style="margin: 0; font-size: 1.1rem;">Statement of Work</h2>
 		{#if !editing && jobStatus === 'SOW_NEGOTIATION'}
 			<button class="btn btn-secondary" onclick={startEdit} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
-				{sow ? 'Edit' : 'Create SoW'}
+				{sow ? 'Edit SoW' : 'Create SoW'}
 			</button>
 		{/if}
 	</div>
@@ -167,25 +311,107 @@
 
 	{#if editing}
 		<form onsubmit={(e) => { e.preventDefault(); saveSow(); }}>
+
+			<!-- SoW fields -->
 			<div class="form-group">
-				<label for="sow-scope">Scope</label>
-				<textarea id="sow-scope" bind:value={editScope} required placeholder="Describe the overall scope of work..." style="min-height: 100px;"></textarea>
+				<label for="sow-detailed-spec">
+					Detailed Specification of Work
+					<span style="font-weight: 400; color: #777; font-size: 0.85rem;"> — Please describe in more detail what is expected to be done.</span>
+				</label>
+				<textarea id="sow-detailed-spec" bind:value={editDetailedSpec} rows={MIN_ROWS} use:steppedResize placeholder="Describe in detail what work needs to be done, the expected outcomes, and any technical requirements..."></textarea>
 			</div>
 			<div class="form-group">
-				<label for="sow-deliverables">Deliverables</label>
-				<textarea id="sow-deliverables" bind:value={editDeliverables} required placeholder="List specific deliverables..." style="min-height: 100px;"></textarea>
+				<label for="sow-work-process">
+					Work Process
+					<span style="font-weight: 400; color: #777; font-size: 0.85rem;"> — Please describe procedures such as the frequency and channels of communication, what the Employer will provide to facilitate the work, and how the Agent will submit deliverables.</span>
+				</label>
+				<textarea id="sow-work-process" bind:value={editWorkProcess} rows={MIN_ROWS} use:steppedResize placeholder="e.g. Weekly check-ins via email; employer will provide API keys and access credentials; deliverables submitted via GitHub PR..."></textarea>
 			</div>
-			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-				<div class="form-group">
+			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+				<div class="form-group" style="margin-bottom: 0;">
 					<label for="sow-price">Price (USD)</label>
-					<input id="sow-price" type="number" bind:value={editPriceDollars} min="0" step="0.01" required placeholder="0.00" />
+					<input id="sow-price" type="number" bind:value={editPriceDollars} min="0" step="0.01" placeholder="0.00" />
 				</div>
-				<div class="form-group">
+				<div class="form-group" style="margin-bottom: 0;">
 					<label for="sow-timeline">Timeline (days)</label>
 					<input id="sow-timeline" type="number" bind:value={editTimelineDays} min="1" step="1" placeholder="7" />
 				</div>
 			</div>
-			<div style="display: flex; gap: 0.75rem; margin-top: 0.5rem;">
+
+			<!-- Milestones section -->
+			<div style="border-top: 1px solid #f0f0f0; margin-top: 1rem; padding-top: 1rem;">
+				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+					<h3 style="margin: 0; font-size: 1rem; font-weight: 600;">Milestones</h3>
+					<button type="button" class="btn btn-secondary" onclick={addMilestone} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
+						+ Add milestone
+					</button>
+				</div>
+
+				{#each editMilestones as milestone, i}
+					<div class="milestone-row">
+						<div class="milestone-header">
+							<strong style="font-size: 0.9rem;">Milestone {i + 1}</strong>
+							{#if editMilestones.length > 1}
+								<button type="button" class="btn btn-danger" onclick={() => removeMilestone(i)} style="font-size: 0.8rem; padding: 0.2rem 0.6rem;">
+									Remove
+								</button>
+							{/if}
+						</div>
+
+						<div style="display: grid; grid-template-columns: 1fr auto; gap: 0.75rem; align-items: start;">
+							<div class="form-group" style="margin-bottom: 0.5rem;">
+								<label for="ms-title-{i}">Title</label>
+								<input id="ms-title-{i}" type="text" bind:value={milestone.title} required placeholder="Milestone title" />
+							</div>
+							<div class="form-group" style="margin-bottom: 0.5rem;">
+								<label for="ms-payout-{i}">Payout after completion (USD)</label>
+								<input id="ms-payout-{i}" type="number" bind:value={milestone.payout} min="0" step="0.01" placeholder="0.00" style="width: 150px;" />
+							</div>
+						</div>
+
+						<div class="form-group" style="margin-bottom: 0.75rem;">
+							<label for="ms-deliverables-{i}">
+								Deliverables
+								<span style="font-weight: 400; color: #777; font-size: 0.85rem;"> — What will result from the work? e.g. physical objects, digital goods, time spent, information</span>
+							</label>
+							<textarea
+								id="ms-deliverables-{i}"
+								bind:value={milestone.deliverables}
+								rows={MIN_ROWS}
+								use:steppedResize
+								placeholder="e.g. Deployed web application, source code repository, documentation..."
+							></textarea>
+						</div>
+
+						<div>
+							<p style="font-size: 0.9rem; font-weight: 500; color: #333; margin: 0 0 0.35rem;">
+								Acceptance criteria
+								<span style="font-weight: 400; color: #777; font-size: 0.85rem;"> — What does success look like?</span>
+							</p>
+							{#each milestone.criteria as criterion, ci}
+								<div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: flex-start;">
+									<textarea
+										value={criterion}
+										oninput={(e) => updateCriteria(i, ci, (e.target as HTMLTextAreaElement).value)}
+										placeholder="e.g. All tests pass, page loads in under 2s"
+										rows={MIN_ROWS}
+										use:steppedResize
+										style="flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 0.9rem; resize: none;"
+									></textarea>
+									{#if milestone.criteria.length > 1}
+										<button type="button" onclick={() => removeCriteria(i, ci)} style="background: none; border: none; color: #dc3545; cursor: pointer; font-size: 1.1rem; padding: 0.3rem 0.25rem;" title="Remove">×</button>
+									{/if}
+								</div>
+							{/each}
+							<button type="button" onclick={() => addCriteria(i)} style="background: none; border: none; color: #0066cc; cursor: pointer; font-size: 0.85rem; padding: 0.1rem 0; margin-top: 0.2rem;">
+								+ Add criterion
+							</button>
+						</div>
+					</div>
+				{/each}
+			</div>
+
+			<div style="display: flex; gap: 0.75rem; margin-top: 1.25rem;">
 				<button type="submit" class="btn btn-primary" disabled={saving}>
 					{saving ? 'Saving…' : 'Save SoW'}
 				</button>
@@ -196,24 +422,34 @@
 		</form>
 	{:else if sow}
 		<div style="display: grid; gap: 1rem;">
-			<div>
-				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Scope</p>
-				<p style="margin: 0; color: #333; white-space: pre-wrap;">{sow.scope}</p>
-			</div>
-			<div>
-				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Deliverables</p>
-				<p style="margin: 0; color: #333; white-space: pre-wrap;">{sow.deliverables}</p>
-			</div>
-			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+			{#if sow.detailed_spec}
 				<div>
-					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Price</p>
-					<p style="margin: 0; font-size: 1.1rem; font-weight: 600; color: #1a1a1a;">${formatCentsToDollars(sow.price_cents)}</p>
+					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Detailed Specification of Work</p>
+					<p style="margin: 0; color: #333; white-space: pre-wrap;">{sow.detailed_spec}</p>
 				</div>
+			{/if}
+			{#if sow.work_process}
 				<div>
-					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Timeline</p>
-					<p style="margin: 0; color: #333;">{sow.timeline_days} day{sow.timeline_days !== 1 ? 's' : ''}</p>
+					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Work Process</p>
+					<p style="margin: 0; color: #333; white-space: pre-wrap;">{sow.work_process}</p>
 				</div>
-			</div>
+			{/if}
+			{#if sow.price_cents > 0 || sow.timeline_days > 0}
+				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+					{#if sow.price_cents > 0}
+						<div>
+							<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Price</p>
+							<p style="margin: 0; font-size: 1.1rem; font-weight: 600; color: #1a1a1a;">${formatCentsToDollars(sow.price_cents)}</p>
+						</div>
+					{/if}
+					{#if sow.timeline_days > 0}
+						<div>
+							<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.04em;">Timeline</p>
+							<p style="margin: 0; color: #333;">{sow.timeline_days} day{sow.timeline_days !== 1 ? 's' : ''}</p>
+						</div>
+					{/if}
+				</div>
+			{/if}
 
 			<!-- Acceptance status -->
 			<div style="border-top: 1px solid #f0f0f0; padding-top: 1rem;">
@@ -258,3 +494,36 @@
 		{/if}
 	{/if}
 </div>
+
+<!-- Milestones read-only view (shown outside edit mode when milestones exist) -->
+{#if !editing && milestones && milestones.length > 0}
+	<div class="card" style="margin-bottom: 1.5rem;">
+		<h2 style="margin: 0 0 1rem; font-size: 1.1rem;">Milestones</h2>
+		<div style="display: flex; flex-direction: column; gap: 0.75rem;">
+			{#each milestones as milestone, i}
+				<div class="milestone-row">
+					<div class="milestone-header">
+						<strong style="font-size: 0.95rem;">Milestone {i + 1}: {milestone.title}</strong>
+						<span style="font-size: 0.9rem; color: #555;">${(milestone.amount / 100).toFixed(2)}</span>
+					</div>
+					{#if milestone.deliverables}
+						<div style="margin-top: 0.5rem;">
+							<p style="font-size: 0.8rem; font-weight: 600; color: #666; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.03em;">Deliverables</p>
+							<p style="margin: 0; color: #444; font-size: 0.9rem; white-space: pre-wrap;">{milestone.deliverables}</p>
+						</div>
+					{/if}
+					{#if milestone.criteria && milestone.criteria.length > 0}
+						<div style="margin-top: 0.5rem;">
+							<p style="font-size: 0.8rem; font-weight: 600; color: #666; margin: 0 0 0.25rem; text-transform: uppercase; letter-spacing: 0.03em;">Acceptance Criteria</p>
+							<ul style="margin: 0; padding-left: 1.25rem; font-size: 0.88rem; color: #555;">
+								{#each milestone.criteria as criterion}
+									<li style="margin-bottom: 0.2rem;">{criterion.description}</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
+				</div>
+			{/each}
+		</div>
+	</div>
+{/if}

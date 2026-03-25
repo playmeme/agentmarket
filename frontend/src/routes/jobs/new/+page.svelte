@@ -11,14 +11,12 @@
 
 	function steppedResize(node: HTMLTextAreaElement) {
 		function resize() {
-			// Temporarily shrink to measure natural scroll height
 			node.rows = MIN_ROWS;
 			const lineHeight = parseFloat(getComputedStyle(node).lineHeight) || 20;
 			const paddingV =
 				parseFloat(getComputedStyle(node).paddingTop) +
 				parseFloat(getComputedStyle(node).paddingBottom);
 			const naturalLines = Math.ceil((node.scrollHeight - paddingV) / lineHeight);
-			// Round up to next step boundary
 			const steppedLines = Math.max(MIN_ROWS, Math.ceil(naturalLines / ROW_STEP) * ROW_STEP);
 			node.rows = steppedLines;
 		}
@@ -95,7 +93,7 @@
 
 	<div class="page-header">
 		<h1>Enter a Job Brief</h1>
-		<p>Describe the work at a high level. You can add a detailed Statement of Work later, together with the Agent.</p>
+		<p>Describe the work at a high level. Milestones and detailed specs are negotiated with the agent via the SoW after assignment.</p>
 	</div>
 
 	{#if error}
@@ -111,7 +109,7 @@
 			</div>
 			<div class="form-group">
 				<label for="description">Brief Description</label>
-				<textarea id="description" bind:value={description} required placeholder="Briefly describe the task. What do you need done?" rows={MIN_ROWS} use:steppedResize></textarea>
+				<textarea id="description" bind:value={description} required placeholder="What do you need done? Keep it brief — detailed specs go in the SoW." rows={MIN_ROWS} use:steppedResize></textarea>
 			</div>
 			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
 				<div class="form-group">
@@ -126,13 +124,13 @@
 		</div>
 
 		<div class="card" style="margin-bottom: 1.5rem;">
-			<h2 style="margin: 0 0 0.5rem; font-size: 1.1rem;">Statement of Work</h2>
-			<p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
-				The Statement of Work (SoW) is optional at this stage. After a Job is offered, the Agent can help you fill out the SoW.
+			<h2 style="margin: 0 0 0.4rem; font-size: 1.1rem;">Statement of Work</h2>
+			<p style="margin: 0 0 1rem; font-size: 0.9rem; color: #666;">
+				You'll negotiate detailed specs, deliverables, and milestones with the agent once they're assigned. Optionally link an existing SoW doc to get things started.
 			</p>
 			<div class="form-group" style="margin-bottom: 0;">
-				<label for="sow-link">Link to SoW (optional)</label>
-				<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.example.com/sow" />
+				<label for="sow-link">SoW document URL <span style="font-weight: normal; color: #888;">(optional)</span></label>
+				<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.google.com/..." />
 			</div>
 		</div>
 

@@ -147,11 +147,14 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 
 func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
-	var agentID, stripe, sowLink sql.NullString
+	var agentID, sowLink, stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.CreatedAt, &j.UpdatedAt)
 	if agentID.Valid {
 		j.AgentID = agentID.String
+	}
+	if sowLink.Valid {
+		j.SowLink = sowLink.String
 	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
@@ -165,11 +168,14 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 // scanJobWithName scans a job row that includes an extra agent_name column at the end.
 func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
-	var agentID, stripe, sowLink sql.NullString
+	var agentID, sowLink, stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
 	if agentID.Valid {
 		j.AgentID = agentID.String
+	}
+	if sowLink.Valid {
+		j.SowLink = sowLink.String
 	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
@@ -665,11 +671,11 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 
 	var m Milestone
 	row := app.DB.QueryRow(
-		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Status,
+	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
@@ -700,7 +706,7 @@ func (app *App) GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 
 	rows, err := app.DB.Query(
-		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, stripe_payment_intent, created_at, updated_at
+		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, stripe_payment_intent, created_at, updated_at
 		 FROM jobs WHERE agent_id = ? AND status = 'PENDING_ACCEPTANCE' ORDER BY created_at DESC`,
 		agentID,
 	)
@@ -775,7 +781,7 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	// Create default SOW from job's existing payout and timeline
 	sowID := uuid.New().String()
 	_, err = tx.Exec(
-		`INSERT INTO sow (id, job_id, scope, deliverables, price_cents, timeline_days, agent_accepted, employer_accepted)
+		`INSERT INTO sow (id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted)
 		 VALUES (?, ?, '', '', ?, ?, 0, 0)`,
 		sowID, jobID, totalPayout, timelineDays,
 	)
@@ -900,11 +906,11 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	var m Milestone
 	row := app.DB.QueryRow(
-		`SELECT id, job_id, title, amount, order_index, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Status,
+	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 		log.Error("milestone submit: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
