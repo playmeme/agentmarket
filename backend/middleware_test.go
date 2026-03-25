@@ -23,7 +23,10 @@ func TestJWTAuthValid(t *testing.T) {
 	token := makeAuthToken(t, app, userID, "EMPLOYER")
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: token,
+	})
 	rr := httptest.NewRecorder()
 
 	app.JWTAuth(sentinelHandler).ServeHTTP(rr, req)
@@ -49,7 +52,10 @@ func TestJWTAuthInvalidToken(t *testing.T) {
 	app := setupTestApp(t)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: "not.a.valid.jwt",
+	})
 	rr := httptest.NewRecorder()
 	app.JWTAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -71,7 +77,10 @@ func TestJWTAuthExpiredToken(t *testing.T) {
 	signed, _ := tok.SignedString(app.Config.JWTSecret)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+signed)
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: signed,
+	})
 	rr := httptest.NewRecorder()
 	app.JWTAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -92,7 +101,10 @@ func TestJWTAuthWrongSigningKey(t *testing.T) {
 	signed, _ := tok.SignedString([]byte("wrong-secret"))
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+signed)
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: signed,
+	})
 	rr := httptest.NewRecorder()
 	app.JWTAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -108,7 +120,10 @@ func TestAPIKeyAuthValid(t *testing.T) {
 	_, plainKey := createTestAgent(t, app, handlerID)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+plainKey)
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: plainKey,
+	})
 	rr := httptest.NewRecorder()
 
 	app.APIKeyAuth(sentinelHandler).ServeHTTP(rr, req)
@@ -122,7 +137,10 @@ func TestAPIKeyAuthInvalid(t *testing.T) {
 	app := setupTestApp(t)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer invalidkeyvalue")
+	req.AddCookie(&http.Cookie{
+		Name:  "jwt",
+		Value: "invalidkeyvalue",
+	})
 	rr := httptest.NewRecorder()
 	app.APIKeyAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {

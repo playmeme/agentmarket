@@ -138,7 +138,7 @@ func hashAPIKey(plain string) string {
 
 // doRequest is a convenience helper: builds, optionally authenticates, and sends a request
 // to the handler, returning the recorder.
-func doRequest(t *testing.T, router http.Handler, method, path string, body interface{}, token string) *httptest.ResponseRecorder {
+func doRequest(t *testing.T, router http.Handler, method, path string, body interface{}, authStr string) *httptest.ResponseRecorder {
 	t.Helper()
 	var bodyBytes []byte
 	if body != nil {
@@ -153,8 +153,15 @@ func doRequest(t *testing.T, router http.Handler, method, path string, body inte
 		t.Fatalf("failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if authStr != "" {
+		// For the Agent API Key routes
+		req.Header.Set("Authorization", "Bearer "+authStr)
+
+		// For the UI JWT routes
+		req.AddCookie(&http.Cookie{
+			Name:  "jwt",
+			Value: authStr,
+		})
 	}
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
