@@ -61,6 +61,41 @@ func TestHireAgent(t *testing.T) {
 	}
 }
 
+// TestHireAgentNoAgentID verifies that a job can be created without an agent_id (i.e. agent_id
+// is omitted or empty). This was previously broken because an empty string was passed as the
+// agent_id FK value, causing a FOREIGN KEY constraint failure (SQLite error 787).
+func TestHireAgentNoAgentID(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _ := createVerifiedTestUser(t, app, "EMPLOYER")
+	token := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	body := HireRequest{
+		// AgentID intentionally omitted (empty string)
+		Title:        "Draft job without agent",
+		Description:  "No agent assigned yet",
+		TotalPayout:  1000,
+		TimelineDays: 5,
+	}
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire", body, token)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for job without agent_id, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var job Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.ID == "" {
+		t.Error("expected job ID")
+	}
+	if job.AgentID != "" {
+		t.Errorf("expected empty agent_id, got %q", job.AgentID)
+	}
+}
+
 func TestHireAgentUnverifiedEmail(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
