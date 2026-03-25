@@ -499,6 +499,7 @@ func (app *App) ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 
 func (app *App) RefreshHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "refresh_token")
 
 	cookie, err := r.Cookie("refresh")
     if err != nil {
