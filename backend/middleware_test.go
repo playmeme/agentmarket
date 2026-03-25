@@ -120,10 +120,7 @@ func TestAPIKeyAuthValid(t *testing.T) {
 	_, plainKey := createTestAgent(t, app, handlerID)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{
-		Name:  "jwt",
-		Value: plainKey,
-	})
+	req.Header.Set("Authorization", "Bearer "+plainKey)
 	rr := httptest.NewRecorder()
 
 	app.APIKeyAuth(sentinelHandler).ServeHTTP(rr, req)
@@ -137,10 +134,7 @@ func TestAPIKeyAuthInvalid(t *testing.T) {
 	app := setupTestApp(t)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{
-		Name:  "jwt",
-		Value: "invalidkeyvalue",
-	})
+	req.Header.Set("Authorization", "Bearer "+plainKey)
 	rr := httptest.NewRecorder()
 	app.APIKeyAuth(sentinelHandler).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
