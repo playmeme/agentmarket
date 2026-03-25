@@ -10,6 +10,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 )
 
 type ForgotPasswordRequest struct {
@@ -52,7 +57,7 @@ func (app *App) generateJWT(userID, role string) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": userID,
 		"role":    role,
-		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),  // 30 days, will fix this later
+		"exp":     time.Now().Add(15 * time.Minute).Unix(),
 		"iat":     time.Now().Unix(),
 	}
 
@@ -60,27 +65,72 @@ func (app *App) generateJWT(userID, role string) (string, error) {
 	return token.SignedString(app.Config.JWTSecret)
 }
 
-func setAuthCookie(w http.ResponseWriter, token string) {
+func generateRefreshToken() (string, string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+
+	// plain-text token to store in user cookie
+	plainToken := base64.URLEncoding.EncodeToString(bytes)
+
+	// hashedToken to store in SQLite
+	hash := sha256.Sum256([]byte(plainToken))
+	hashedToken := hex.EncodeToString(hash[:])
+
+	return plainToken, hashedToken, nil
+}
+
+func setAuthCookies(w http.ResponseWriter, jwtToken string, refreshToken string) {
+	// 15-Minute Access Token
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
-		Value:    token,
+		Value:    jwtToken,
 		Path:     "/",
-		MaxAge:   30 * 24 * 60 * 60, // 30 days in seconds
+		MaxAge:   15 * 60, // 15 minutes in seconds
 		HttpOnly: true, // Stop XSS
 		Secure:   true, // Send only over HTTPS (Caddy handles this)
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	// 30-Day Refresh Token --> ONLY FOR refresh endpoint 
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh",
+		Value:    refreshToken,
+		Path:     "/api/ui/auth/refresh", 
+		MaxAge:   30 * 24 * 60 * 60, // 30 days in seconds
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 func (app *App) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	// revoke refresh cookie
+	cookie, err := r.Cookie("refresh")
+	if err == nil {
+		hash := sha256.Sum256([]byte(cookie.Value))
+		hashedToken := hex.EncodeToString(hash[:])
+		app.DB.Exec("UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?", hashedToken)
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
 		Value:    "",
 		Path:     "/",
-		MaxAge:   -1,  // -1 destroys the cookie in the browser
+		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh",
+		Value:    "",
+		Path:     "/api/ui/auth/refresh",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
 	})
 	w.WriteHeader(http.StatusOK)
 }
@@ -138,10 +188,29 @@ func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := app.generateJWT(id, req.Role)
+	token, err := app.generateJWT(id, req.Role)  // 15-minute access token
 	if err != nil {
 		log.Error("signup failed: jwt generation error", "user_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	plainRefresh, hashedRefresh, err := generateRefreshToken()
+	if err != nil {
+		log.Error("failed to generate refresh token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+	return
+	}
+
+	// Save hashedRefresh token, using SQLite datetime to calculate the 30-day expiration
+	_, err = app.DB.Exec(
+		`INSERT INTO refresh_tokens (token_hash, user_id, expires_at) 
+		VALUES (?, ?, datetime('now', '+30 days'))`,
+		hashedRefresh, id,
+	)
+	if err != nil {
+		log.Error("failed to save refresh token", "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
@@ -157,7 +226,7 @@ func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 		log.Info("verification email sent", "user_id", id, "email", req.Email)
 	}
 
-	setAuthCookie(w, token)
+	setAuthCookies(w, token, plainRefresh)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -202,16 +271,35 @@ func (app *App) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := app.generateJWT(id, role)
+	token, err := app.generateJWT(id, role)  // 15-minute access token
 	if err != nil {
 		log.Error("login failed: jwt generation error", "user_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
 
+	plainRefresh, hashedRefresh, err := generateRefreshToken()
+	if err != nil {
+		log.Error("failed to generate refresh token", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+	return
+	}
+
+	// Save hashedRefresh token, using SQLite datetime to calculate the 30-day expiration
+	_, err = app.DB.Exec(
+		`INSERT INTO refresh_tokens (token_hash, user_id, expires_at) 
+		VALUES (?, ?, datetime('now', '+30 days'))`,
+		hashedRefresh, id,
+	)
+	if err != nil {
+		log.Error("failed to save refresh token", "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
 	log.Info("login successful", "user_id", id, "email", req.Email, "role", role)
 
-	setAuthCookie(w, token)
+	setAuthCookies(w, token, plainRefresh)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthResponse{
@@ -407,3 +495,53 @@ func (app *App) ResetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "password updated"})
 }
+
+
+
+func (app *App) RefreshHandler(w http.ResponseWriter, r *http.Request) {
+
+	cookie, err := r.Cookie("refresh")
+    if err != nil {
+		writeError(w, http.StatusUnauthorized, "missing refresh token")
+		return
+	}
+
+	// Hash the incoming plain-text cookie so we can look it up in the database
+	plainToken := cookie.Value
+	hash := sha256.Sum256([]byte(plainToken))
+	hashedToken := hex.EncodeToString(hash[:])
+
+	// Look up the token. It must exist, belong to a user, not be revoked, and not be expired.
+	var userID, role string
+	err = app.DB.QueryRow(`
+		SELECT r.user_id, u.role
+		FROM refresh_tokens r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.token_hash = ? AND r.revoked = 0 AND r.expires_at > CURRENT_TIMESTAMP
+	`, hashedToken).Scan(&userID, &role)
+
+	if err != nil {
+		// If the token is fake, revoked, or expired, reject them.
+		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token")
+		return
+	}
+
+	// Generate a fresh 15-minute Access Token
+	newJWT, err := app.generateJWT(userID, role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	// Update the cookies (giving them the new JWT, and preserving their existing refresh token)
+	setAuthCookies(w, newJWT, plainToken)
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "refreshed"})
+}
+
+
+
+
+
+
