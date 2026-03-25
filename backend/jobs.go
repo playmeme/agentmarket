@@ -142,9 +142,13 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 
 func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
+	var agentID sql.NullString
 	var stripe sql.NullString
-	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt)
+	if agentID.Valid {
+		j.AgentID = agentID.String
+	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -154,9 +158,13 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 // scanJobWithName scans a job row that includes an extra agent_name column at the end.
 func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
+	var agentID sql.NullString
 	var stripe sql.NullString
-	err := row.Scan(&j.ID, &j.EmployerID, &j.AgentID, &j.Status, &j.Title, &j.Description,
+	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
 		&j.TotalPayout, &j.TimelineDays, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
+	if agentID.Valid {
+		j.AgentID = agentID.String
+	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
@@ -1145,7 +1153,7 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 
 	result, err := app.DB.Exec(
-		`UPDATE jobs SET status = 'RETRACTED', agent_id = '', updated_at = CURRENT_TIMESTAMP
+		`UPDATE jobs SET status = 'RETRACTED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND employer_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, employerID,
 	)
