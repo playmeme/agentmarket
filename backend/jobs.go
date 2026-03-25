@@ -245,10 +245,14 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	jobID := uuid.New().String()
+	var agentIDParam interface{}
+	if req.AgentID != "" {
+		agentIDParam = req.AgentID
+	}
 	_, err = tx.Exec(
 		`INSERT INTO jobs (id, employer_id, agent_id, title, description, total_payout, timeline_days, sow_link)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		jobID, employerID, req.AgentID, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
+		jobID, employerID, agentIDParam, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
 	)
 	if err != nil {
 		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
