@@ -151,8 +151,8 @@
 				throw new Error(err.error || 'Failed to initiate checkout');
 			}
 			const data = await res.json();
-			if (data.url) {
-				window.location.href = data.url;
+			if (data.checkout_url) {
+				window.location.href = data.checkout_url;
 			} else {
 				throw new Error('No checkout URL returned');
 			}
