@@ -16,6 +16,10 @@ import (
 
 // CreateCheckoutHandler creates a Stripe Checkout Session for a job (employer only).
 // POST /api/ui/jobs/{job_id}/checkout
+// Optional body: { "coupon_code": "M1PAID" }
+// If the coupon covers the full amount, Stripe is skipped and the job is moved to
+// IN_PROGRESS directly. If it is a partial discount, Stripe is called with the
+// reduced amount.
 func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "create_checkout")
 
@@ -28,6 +32,13 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	employerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
+
+	// Parse optional body for coupon_code (body may be empty for no-coupon flow).
+	var reqBody struct {
+		CouponCode string `json:"coupon_code"`
+	}
+	// Ignore decode errors — body is optional; an empty/missing body is fine.
+	_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 	// Verify job belongs to employer and is in AWAITING_PAYMENT
 	var jobStatus string
@@ -65,6 +76,66 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Coupon handling ---
+	chargeAmountCents := int64(sow.PriceCents)
+	var appliedCoupon *Coupon
+
+	if reqBody.CouponCode != "" {
+		coupon, couponErr := app.validateCoupon(reqBody.CouponCode)
+		if couponErr == sql.ErrNoRows {
+			writeError(w, http.StatusBadRequest, "invalid coupon code")
+			return
+		}
+		if couponErr != nil {
+			log.Error("checkout: coupon db error", "code", reqBody.CouponCode, "error", couponErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if coupon.TimesUsed >= coupon.MaxUses {
+			writeError(w, http.StatusBadRequest, "coupon has already been used")
+			return
+		}
+
+		discountCents, calcErr := calcDiscount(coupon.Value, chargeAmountCents)
+		if calcErr != nil {
+			log.Error("checkout: coupon discount calculation failed", "value", coupon.Value, "error", calcErr)
+			writeError(w, http.StatusInternalServerError, "failed to calculate coupon discount")
+			return
+		}
+
+		chargeAmountCents -= discountCents
+		appliedCoupon = coupon
+		log.Info("checkout: coupon applied", "code", coupon.Code, "discount_cents", discountCents, "final_cents", chargeAmountCents)
+	}
+
+	// If the coupon covers the full amount, skip Stripe entirely.
+	if chargeAmountCents <= 0 {
+		// Mark job as IN_PROGRESS directly.
+		_, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			jobID,
+		)
+		if dbErr != nil {
+			log.Error("checkout: failed to update job to IN_PROGRESS after full coupon", "job_id", jobID, "error", dbErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		// Increment coupon usage.
+		if err := app.applyCouponUsage(appliedCoupon.Code); err != nil {
+			log.Error("checkout: failed to increment coupon usage", "code", appliedCoupon.Code, "error", err)
+			// Non-fatal: job is already IN_PROGRESS, log and continue.
+		}
+		log.Info("checkout: full coupon applied, job moved to IN_PROGRESS", "job_id", jobID, "coupon", appliedCoupon.Code, "employer_id", employerID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"paid":    true,
+			"message": "Coupon covered full amount",
+		})
+		return
+	}
+
+	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
 
 	params := &stripe.CheckoutSessionParams{
@@ -76,7 +147,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
 						Name: stripe.String(fmt.Sprintf("Job Payment: %s", jobID)),
 					},
-					UnitAmount: stripe.Int64(int64(sow.PriceCents)),
+					UnitAmount: stripe.Int64(chargeAmountCents),
 				},
 				Quantity: stripe.Int64(1),
 			},
@@ -107,7 +178,16 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID)
+	// If a partial coupon was applied, record the usage now that the Stripe
+	// session exists (the session becoming "completed" will move the job).
+	if appliedCoupon != nil {
+		if err := app.applyCouponUsage(appliedCoupon.Code); err != nil {
+			log.Error("checkout: failed to increment partial coupon usage", "code", appliedCoupon.Code, "error", err)
+			// Non-fatal.
+		}
+	}
+
+	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID, "charge_cents", chargeAmountCents)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{

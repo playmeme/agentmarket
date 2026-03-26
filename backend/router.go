@@ -140,6 +140,8 @@ func NewRouter(app *App) *chi.Mux {
 				r.Get("/count", app.GetNotificationCountHandler)
 				r.Post("/{id}/dismiss", app.DismissNotificationHandler)
 			})
+
+			r.Post("/coupons/validate", app.ValidateCouponHandler)
 		})
 
 		// Public webhook routes (no auth)

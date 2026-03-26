@@ -326,6 +326,25 @@ var migrations = []func(tx *sql.Tx) error{
 	// Both changes require table rebuilds (SQLite does not support ALTER COLUMN),
 	// so this is handled by rawMigrations[8] below (requires PRAGMA foreign_keys = OFF).
 	func(tx *sql.Tx) error { return nil },
+
+	// version 9 → 10: Issue #96 — add coupons table for payment discount codes.
+	// code is unique; value is either a percentage (e.g. "10%") or a flat dollar
+	// amount (e.g. "91.00"). max_uses limits total redemptions; times_used tracks
+	// how many times the coupon has been successfully applied.
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS coupons (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			code TEXT NOT NULL UNIQUE,
+			value TEXT NOT NULL,
+			max_uses INTEGER NOT NULL DEFAULT 1,
+			times_used INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`)
+		if err != nil {
+			return fmt.Errorf("create coupons table: %w", err)
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw

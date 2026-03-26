@@ -82,6 +82,12 @@
 	let error = $state('');
 	let checkoutLoading = $state(false);
 	let checkoutError = $state('');
+	let couponCode = $state('');
+	let couponLoading = $state(false);
+	let couponError = $state('');
+	let couponDiscountCents = $state(0);
+	let couponFinalCents = $state(0);
+	let couponApplied = $state(false);
 	let retractLoading = $state(false);
 	let retractError = $state('');
 	let deleting = $state(false);
@@ -139,19 +145,57 @@
 		await loadJob();
 	});
 
+	async function handleApplyCoupon() {
+		if (!couponCode.trim()) return;
+		couponLoading = true;
+		couponError = '';
+		couponApplied = false;
+		couponDiscountCents = 0;
+		couponFinalCents = 0;
+		try {
+			const amountCents = job?.sow?.price_cents ?? 0;
+			const res = await apiFetch('/api/ui/coupons/validate', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code: couponCode.trim(), amount_cents: amountCents })
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Invalid coupon code' }));
+				throw new Error(err.error || 'Invalid coupon code');
+			}
+			const data = await res.json();
+			couponDiscountCents = data.discount_cents;
+			couponFinalCents = data.final_amount_cents;
+			couponApplied = true;
+		} catch (e: unknown) {
+			couponError = e instanceof Error ? e.message : 'Failed to validate coupon';
+		} finally {
+			couponLoading = false;
+		}
+	}
+
 	async function handleCheckout() {
 		checkoutLoading = true;
 		checkoutError = '';
 		try {
+			const body: Record<string, string> = {};
+			if (couponApplied && couponCode.trim()) {
+				body.coupon_code = couponCode.trim();
+			}
 			const res = await apiFetch(`/api/ui/jobs/${jobId}/checkout`, {
-				method: 'POST'
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
 			});
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ error: 'Failed to initiate checkout' }));
 				throw new Error(err.error || 'Failed to initiate checkout');
 			}
 			const data = await res.json();
-			if (data.checkout_url) {
+			if (data.paid) {
+				// Coupon covered the full amount — reload job to show IN_PROGRESS.
+				await loadJob();
+			} else if (data.checkout_url) {
 				window.location.href = data.checkout_url;
 			} else {
 				throw new Error('No checkout URL returned');
@@ -500,22 +544,75 @@
 			</div>
 		{/if}
 
-		<!-- Awaiting payment — Pay Now button (employer only) -->
+		<!-- Awaiting payment — coupon + Pay Now button (employer only) -->
 		{#if job.status === 'AWAITING_PAYMENT' && isEmployer}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #fbbf24; background: #fffbeb;">
-				<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-					<div>
-						<h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Payment Required</h3>
-						<p style="margin: 0; color: #666; font-size: 0.9rem;">Both parties have agreed to the SoW. Complete payment to start the job.</p>
-					</div>
-					<div>
-						{#if checkoutError}
-							<div class="alert alert-error" style="margin-bottom: 0.5rem;">{checkoutError}</div>
+				<h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Payment Required</h3>
+				<p style="margin: 0 0 1rem; color: #666; font-size: 0.9rem;">Both parties have agreed to the SoW. Complete payment to start the job.</p>
+
+				<!-- Coupon code input -->
+				<div style="margin-bottom: 1rem;">
+					<label for="coupon-code" style="display: block; font-size: 0.85rem; font-weight: 600; color: #555; margin-bottom: 0.35rem;">
+						Have a coupon code?
+					</label>
+					<div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+						<input
+							id="coupon-code"
+							type="text"
+							bind:value={couponCode}
+							placeholder="Enter coupon code"
+							style="flex: 1; min-width: 160px; max-width: 260px;"
+							disabled={couponApplied || couponLoading}
+						/>
+						{#if couponApplied}
+							<button
+								type="button"
+								class="btn btn-secondary"
+								style="font-size: 0.85rem;"
+								onclick={() => { couponApplied = false; couponCode = ''; couponError = ''; couponDiscountCents = 0; couponFinalCents = 0; }}
+							>
+								Remove
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="btn btn-secondary"
+								style="font-size: 0.85rem;"
+								onclick={handleApplyCoupon}
+								disabled={couponLoading || !couponCode.trim()}
+							>
+								{couponLoading ? 'Checking…' : 'Apply'}
+							</button>
 						{/if}
-						<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
-							{checkoutLoading ? 'Redirecting…' : 'Pay Now'}
-						</button>
 					</div>
+					{#if couponError}
+						<p style="margin: 0.35rem 0 0; font-size: 0.85rem; color: #991b1b;">{couponError}</p>
+					{/if}
+					{#if couponApplied}
+						<div style="margin-top: 0.5rem; font-size: 0.875rem; color: #065f46; background: #d1fae5; border-radius: 6px; padding: 0.4rem 0.75rem; display: inline-block;">
+							Coupon applied — discount: -{(couponDiscountCents / 100).toFixed(2)} USD
+							{#if couponFinalCents <= 0}
+								&nbsp;(full amount covered)
+							{:else}
+								&nbsp;&rarr; you pay {(couponFinalCents / 100).toFixed(2)} USD
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+					{#if checkoutError}
+						<div class="alert alert-error" style="margin: 0; flex: 1;">{checkoutError}</div>
+					{/if}
+					<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
+						{#if checkoutLoading}
+							{couponApplied && couponFinalCents <= 0 ? 'Activating…' : 'Redirecting…'}
+						{:else if couponApplied && couponFinalCents <= 0}
+							Activate (No Charge)
+						{:else}
+							Pay Now
+						{/if}
+					</button>
 				</div>
 			</div>
 		{/if}
