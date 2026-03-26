@@ -62,8 +62,7 @@
 			COMPLETED: 'badge-completed',
 			PENDING: 'badge-pending',
 			PENDING_ACCEPTANCE: 'badge-pending',
-			CANCELLED: 'badge-cancelled',
-			RETRACTED: 'badge-cancelled'
+			CANCELLED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}

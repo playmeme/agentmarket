@@ -107,8 +107,7 @@
 			COMPLETED: 'badge-completed',
 			PENDING: 'badge-pending',
 			PENDING_ACCEPTANCE: 'badge-pending',
-			CANCELLED: 'badge-cancelled',
-			RETRACTED: 'badge-cancelled'
+			CANCELLED: 'badge-cancelled'
 		};
 		return map[status] ?? 'badge-pending';
 	}
@@ -152,8 +151,8 @@
 				throw new Error(err.error || 'Failed to initiate checkout');
 			}
 			const data = await res.json();
-			if (data.url) {
-				window.location.href = data.url;
+			if (data.checkout_url) {
+				window.location.href = data.checkout_url;
 			} else {
 				throw new Error('No checkout URL returned');
 			}
@@ -236,7 +235,7 @@
 			}
 			rejectReason = '';
 			showRejectForm = false;
-			await loadJob();
+			goto('/dashboard/handler');
 		} catch (e: unknown) {
 			rejectError = e instanceof Error ? e.message : 'Failed to reject offer';
 		} finally {
@@ -303,6 +302,13 @@
 				style="color: #888; font-size: 0.9rem;"
 			>← Dashboard</a>
 		</div>
+
+		<!-- Payment status banner (shown after Stripe redirect) -->
+		{#if $page.url.searchParams.get('payment') === 'success'}
+			<div class="alert alert-success" style="margin-bottom: 1.25rem;">Payment successful! The agent has been notified to begin work.</div>
+		{:else if $page.url.searchParams.get('payment') === 'cancelled'}
+			<div class="alert alert-warning" style="margin-bottom: 1.25rem;">Payment was cancelled. You can try again when ready.</div>
+		{/if}
 
 		<!-- Job header -->
 		<div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
@@ -376,11 +382,11 @@
 			</div>
 		</div>
 
-		<!-- Accept / Reject offer (handler only, when job is PENDING_ACCEPTANCE) -->
+		<!-- Accept / Decline offer (handler only, when job is PENDING_ACCEPTANCE) -->
 		{#if job.status === 'PENDING_ACCEPTANCE' && isManager}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #a5b4fc; background: #eef2ff;">
 				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Job Offer — Action Required</h3>
-				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">You have received a job offer. Accept to begin SoW negotiation, or reject and return the job to open status.</p>
+				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">You have received a job offer. Accept to begin SoW negotiation, or decline and return the job to open status.</p>
 
 				{#if acceptError}
 					<div class="alert alert-error" style="margin-bottom: 0.75rem;">{acceptError}</div>
@@ -401,7 +407,7 @@
 							onclick={() => { showRejectForm = true; rejectError = ''; }}
 							disabled={acceptLoading}
 						>
-							Reject Offer
+							Decline Offer
 						</button>
 					</div>
 				{:else}
@@ -410,7 +416,7 @@
 							<div class="alert alert-error" style="margin-bottom: 0.75rem;">{rejectError}</div>
 						{/if}
 						<div class="form-group" style="margin-bottom: 0.75rem;">
-							<label for="reject-reason" style="font-weight: 600; font-size: 0.9rem;">Reason for rejection <span style="color: #991b1b;">*</span></label>
+							<label for="reject-reason" style="font-weight: 600; font-size: 0.9rem;">Reason for declining <span style="color: #991b1b;">*</span></label>
 							<textarea
 								id="reject-reason"
 								bind:value={rejectReason}
@@ -425,7 +431,58 @@
 								onclick={handleRejectOffer}
 								disabled={rejectLoading}
 							>
-								{rejectLoading ? 'Rejecting…' : 'Confirm Rejection'}
+								{rejectLoading ? 'Declining…' : 'Confirm Decline'}
+							</button>
+							<button
+								class="btn"
+								onclick={() => { showRejectForm = false; rejectReason = ''; rejectError = ''; }}
+								disabled={rejectLoading}
+							>
+								Cancel
+							</button>
+						</div>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+
+		<!-- Decline job (handler only, during SOW_NEGOTIATION) -->
+		{#if job.status === 'SOW_NEGOTIATION' && isHandler}
+			<div class="card" style="margin-bottom: 1.5rem; border-color: #fca5a5; background: #fff5f5;">
+				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Decline Job</h3>
+				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">If you no longer wish to proceed, you can decline this job and return it to open status.</p>
+
+				{#if !showRejectForm}
+					<button
+						class="btn btn-secondary"
+						style="color: #991b1b; border-color: #fca5a5;"
+						onclick={() => { showRejectForm = true; rejectError = ''; }}
+					>
+						Decline Job
+					</button>
+				{:else}
+					<div>
+						{#if rejectError}
+							<div class="alert alert-error" style="margin-bottom: 0.75rem;">{rejectError}</div>
+						{/if}
+						<div class="form-group" style="margin-bottom: 0.75rem;">
+							<label for="reject-reason-sow" style="font-weight: 600; font-size: 0.9rem;">Reason for declining <span style="color: #991b1b;">*</span></label>
+							<textarea
+								id="reject-reason-sow"
+								bind:value={rejectReason}
+								placeholder="Please explain why you are declining this job. This message will be sent to the employer."
+								style="min-height: 80px; margin-top: 0.35rem;"
+							></textarea>
+						</div>
+						<div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+							<button
+								class="btn btn-secondary"
+								style="color: #991b1b; border-color: #fca5a5;"
+								onclick={handleRejectOffer}
+								disabled={rejectLoading}
+							>
+								{rejectLoading ? 'Declining…' : 'Confirm Decline'}
 							</button>
 							<button
 								class="btn"

@@ -143,7 +143,7 @@ var migrations = []func(tx *sql.Tx) error{
 				agent_id TEXT REFERENCES agents(id),
 				status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
 					'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 				)),
 				title TEXT NOT NULL,
 				description TEXT DEFAULT '',
@@ -366,7 +366,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					agent_id TEXT REFERENCES agents(id),
 					status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
 						'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 					)),
 					title TEXT NOT NULL,
 					description TEXT DEFAULT '',
@@ -456,7 +456,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					agent_id TEXT REFERENCES agents(id),
 					status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
 						'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 					)),
 					title TEXT NOT NULL,
 					description TEXT DEFAULT '',

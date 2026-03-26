@@ -290,14 +290,14 @@ func TestRetractOffer(t *testing.T) {
 	}
 	var retracted Job
 	json.Unmarshal(rr.Body.Bytes(), &retracted)
-	if retracted.Status != "RETRACTED" {
-		t.Errorf("expected RETRACTED status, got %q", retracted.Status)
+	if retracted.Status != "UNASSIGNED" {
+		t.Errorf("expected UNASSIGNED status, got %q", retracted.Status)
 	}
 	if retracted.AgentID != "" {
 		t.Errorf("expected agent_id to be cleared, got %q", retracted.AgentID)
 	}
 
-	// Retracting again should fail — status is now RETRACTED (not a retractable status)
+	// Retracting again should fail — status is now UNASSIGNED (not a retractable status)
 	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/retract", nil, employerToken)
 	if rr.Code != http.StatusConflict {
 		t.Errorf("double-retract: expected 409, got %d", rr.Code)
@@ -366,8 +366,8 @@ func TestRetractOfferDuringSowNegotiation(t *testing.T) {
 	}
 	var retracted Job
 	json.Unmarshal(rr.Body.Bytes(), &retracted)
-	if retracted.Status != "RETRACTED" {
-		t.Errorf("expected RETRACTED, got %q", retracted.Status)
+	if retracted.Status != "UNASSIGNED" {
+		t.Errorf("expected UNASSIGNED, got %q", retracted.Status)
 	}
 	if retracted.AgentID != "" {
 		t.Errorf("expected agent_id cleared, got %q", retracted.AgentID)

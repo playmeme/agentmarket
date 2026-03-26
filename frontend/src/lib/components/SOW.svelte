@@ -161,12 +161,27 @@
 		// Deliverables is a free-text textarea, handled directly
 	}
 
+	// Derived: sum of milestone payouts in dollars
+	const milestonesTotalDollars = $derived(
+		editMilestones.reduce((sum, m) => sum + (Number(m.payout) || 0), 0)
+	);
+
 	async function saveSow() {
 		saving = true;
 		error = '';
 		successMsg = '';
 		try {
 			const priceCents = Math.round(parseFloat(editPriceDollars) * 100) || 0;
+
+			// Client-side validation: milestone totals must not exceed total price
+			if (priceCents > 0 && milestonesTotalDollars * 100 > priceCents) {
+				const totalFormatted = (priceCents / 100).toFixed(2);
+				const msFormatted = milestonesTotalDollars.toFixed(2);
+				throw new Error(
+					`Milestone payments total ($${msFormatted}) exceeds the SoW price ($${totalFormatted}). Please adjust the milestone payouts.`
+				);
+			}
+
 			const res = await apiFetch(`/api/ui/jobs/${jobId}/sow`, {
 				method: 'POST',
 				body: JSON.stringify({
@@ -231,8 +246,8 @@
 				throw new Error(err.error || 'Failed to initiate checkout');
 			}
 			const data = await res.json();
-			if (data.url) {
-				window.location.href = data.url;
+			if (data.checkout_url) {
+				window.location.href = data.checkout_url;
 			} else {
 				throw new Error('No checkout URL returned');
 			}
@@ -346,6 +361,18 @@
 						+ Add milestone
 					</button>
 				</div>
+
+				<!-- Milestone totals summary -->
+				{#if editPriceDollars && parseFloat(editPriceDollars) > 0}
+					{@const totalPrice = parseFloat(editPriceDollars)}
+					{@const milestonesOver = milestonesTotalDollars > totalPrice}
+					<div style="margin-bottom: 1rem; padding: 0.6rem 0.9rem; border-radius: 6px; font-size: 0.9rem; background: {milestonesOver ? '#fff3cd' : '#f0f4ff'}; border: 1px solid {milestonesOver ? '#ffc107' : '#c8d8ff'}; color: {milestonesOver ? '#856404' : '#444'};">
+						Milestone total: <strong>${milestonesTotalDollars.toFixed(2)}</strong> / SoW price: <strong>${totalPrice.toFixed(2)}</strong>
+						{#if milestonesOver}
+							— <strong>Milestone payments exceed the SoW price.</strong>
+						{/if}
+					</div>
+				{/if}
 
 				{#each editMilestones as milestone, i}
 					<div class="milestone-row">
