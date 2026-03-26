@@ -42,6 +42,12 @@ func (s sqliteTime) Scan(src interface{}) error {
 		*s.t = v
 		return nil
 	case string:
+		// Treat empty string as zero/NULL time — existing rows may have
+		// updated_at = "" (empty string, not NULL) rather than a real timestamp.
+		if v == "" {
+			*s.t = time.Time{}
+			return nil
+		}
 		for _, layout := range sqliteTimeFormats {
 			if t, err := time.Parse(layout, v); err == nil {
 				*s.t = t
