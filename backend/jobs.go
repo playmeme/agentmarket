@@ -27,7 +27,7 @@ type Criterion struct {
 
 type Milestone struct {
 	ID               string      `json:"id"`
-	JobID            string      `json:"job_id"`
+	SowID            string      `json:"sow_id"`
 	Title            string      `json:"title"`
 	Amount           int64       `json:"amount"`
 	OrderIndex       int         `json:"order_index"`
@@ -117,8 +117,10 @@ func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error
 
 func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	rows, err := app.DB.Query(
-		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
-		 FROM milestones WHERE job_id = ? ORDER BY order_index`,
+		`SELECT m.id, m.sow_id, m.title, m.amount, m.order_index, m.deliverables, m.status, m.proof_of_work_url, m.proof_of_work_notes, m.created_at, m.updated_at
+		 FROM milestones m
+		 JOIN sow s ON m.sow_id = s.id
+		 WHERE s.job_id = ? ORDER BY m.order_index`,
 		jobID,
 	)
 	if err != nil {
@@ -129,7 +131,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	var milestones []Milestone
 	for rows.Next() {
 		var m Milestone
-		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+		if err := rows.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
@@ -275,31 +277,10 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i, ms := range req.Milestones {
-		msID := uuid.New().String()
-		_, err = tx.Exec(
-			`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
-			msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
-		)
-		if err != nil {
-			log.Error("job creation failed: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to create milestone")
-			return
-		}
-
-		for _, criteriaDesc := range ms.Criteria {
-			cID := uuid.New().String()
-			_, err = tx.Exec(
-				`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`,
-				cID, msID, criteriaDesc,
-			)
-			if err != nil {
-				log.Error("job creation failed: criteria insert error", "milestone_id", msID, "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to create criteria")
-				return
-			}
-		}
-	}
+	// Milestones are now linked to sow_id (not job_id) and are managed during
+	// SOW negotiation via CreateOrUpdateSOW. Any milestones in the hire request
+	// are intentionally ignored here — they will be set once the agent accepts
+	// and a SOW is created.
 
 	if err := tx.Commit(); err != nil {
 		log.Error("job creation failed: commit error", "job_id", jobID, "error", err)
@@ -313,7 +294,6 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		"agent_id", req.AgentID,
 		"title", req.Title,
 		"total_payout", req.TotalPayout,
-		"milestones", len(req.Milestones),
 	)
 
 	// Notify the agent's handler when a job offer is created with an agent assigned
@@ -406,44 +386,9 @@ func (app *App) UpdateJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete existing milestones and criteria, then re-insert
-	_, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`, jobID)
-	if err != nil {
-		log.Error("update job: delete criteria error", "job_id", jobID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to update milestones")
-		return
-	}
-	_, err = tx.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID)
-	if err != nil {
-		log.Error("update job: delete milestones error", "job_id", jobID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to update milestones")
-		return
-	}
-
-	for i, ms := range req.Milestones {
-		msID := uuid.New().String()
-		_, err = tx.Exec(
-			`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
-			msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
-		)
-		if err != nil {
-			log.Error("update job: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update milestone")
-			return
-		}
-		for _, criteriaDesc := range ms.Criteria {
-			cID := uuid.New().String()
-			_, err = tx.Exec(
-				`INSERT INTO criteria (id, milestone_id, description) VALUES (?, ?, ?)`,
-				cID, msID, criteriaDesc,
-			)
-			if err != nil {
-				log.Error("update job: criteria insert error", "milestone_id", msID, "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to update criteria")
-				return
-			}
-		}
-	}
+	// Milestones are now linked to sow_id (not job_id) and are managed during
+	// SOW negotiation via CreateOrUpdateSOW. Job updates only touch the job brief;
+	// milestone changes are handled through the SOW endpoint.
 
 	if err := tx.Commit(); err != nil {
 		log.Error("update job: commit error", "job_id", jobID, "error", err)
@@ -675,7 +620,7 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 
 	result, err := app.DB.Exec(
 		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND job_id = ? AND status = 'REVIEW_REQUESTED'`,
+		 WHERE id = ? AND sow_id = (SELECT id FROM sow WHERE job_id = ?) AND status = 'REVIEW_REQUESTED'`,
 		milestoneID, jobID,
 	)
 	if err != nil {
@@ -694,11 +639,11 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 
 	var m Milestone
 	row := app.DB.QueryRow(
-		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, sow_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
@@ -905,7 +850,7 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := app.DB.Exec(
 		`UPDATE milestones SET status = 'REVIEW_REQUESTED', proof_of_work_url = ?, proof_of_work_notes = ?, updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND job_id = ? AND status = 'PENDING'`,
+		 WHERE id = ? AND sow_id = (SELECT id FROM sow WHERE job_id = ?) AND status = 'PENDING'`,
 		req.ProofOfWorkURL, req.ProofOfWorkNotes, milestoneID, jobID,
 	)
 	if err != nil {
@@ -929,11 +874,11 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	var m Milestone
 	row := app.DB.QueryRow(
-		`SELECT id, job_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, sow_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
 		log.Error("milestone submit: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")

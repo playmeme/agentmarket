@@ -29,10 +29,6 @@ func TestHireAgent(t *testing.T) {
 		Description:  "The details",
 		TotalPayout:  5000,
 		TimelineDays: 7,
-		Milestones: []MilestoneInput{
-			{Title: "Design", Amount: 2000, Criteria: []string{"wireframes done"}},
-			{Title: "Build", Amount: 3000, Criteria: []string{"code merged", "tests pass"}},
-		},
 	}
 	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire", body, token)
 	if rr.Code != http.StatusCreated {
@@ -49,15 +45,10 @@ func TestHireAgent(t *testing.T) {
 	if job.Status != "PENDING_ACCEPTANCE" {
 		t.Errorf("expected status PENDING_ACCEPTANCE, got %q", job.Status)
 	}
-	if len(job.Milestones) != 2 {
-		t.Errorf("expected 2 milestones, got %d", len(job.Milestones))
-	}
-	// Verify criteria were persisted.
-	if len(job.Milestones[0].Criteria) != 1 {
-		t.Errorf("milestone 0: expected 1 criterion, got %d", len(job.Milestones[0].Criteria))
-	}
-	if len(job.Milestones[1].Criteria) != 2 {
-		t.Errorf("milestone 1: expected 2 criteria, got %d", len(job.Milestones[1].Criteria))
+	// Milestones are now linked to sow_id and are set during SOW negotiation,
+	// not at job creation time. No milestones should be present at hire time.
+	if len(job.Milestones) != 0 {
+		t.Errorf("expected 0 milestones at hire time (milestones belong to SOW), got %d", len(job.Milestones))
 	}
 }
 
