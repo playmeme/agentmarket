@@ -111,8 +111,8 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"checkout_url": cs.URL,
-		"session_id":   cs.ID,
+		"url":        cs.URL,
+		"session_id": cs.ID,
 	})
 }
 

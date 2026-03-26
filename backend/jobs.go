@@ -26,18 +26,20 @@ type Criterion struct {
 }
 
 type Milestone struct {
-	ID               string      `json:"id"`
-	SowID            string      `json:"sow_id"`
-	Title            string      `json:"title"`
-	Amount           int64       `json:"amount"`
-	OrderIndex       int         `json:"order_index"`
-	Deliverables     string      `json:"deliverables"`
-	Status           string      `json:"status"`
-	ProofOfWorkURL   string      `json:"proof_of_work_url"`
-	ProofOfWorkNotes string      `json:"proof_of_work_notes"`
-	CreatedAt        time.Time   `json:"created_at"`
-	UpdatedAt        time.Time   `json:"updated_at"`
-	Criteria         []Criterion `json:"criteria,omitempty"`
+	ID                       string      `json:"id"`
+	SowID                    string      `json:"sow_id"`
+	Title                    string      `json:"title"`
+	Amount                   int64       `json:"amount"`
+	OrderIndex               int         `json:"order_index"`
+	Deliverables             string      `json:"deliverables"`
+	Status                   string      `json:"status"`
+	ProofOfWorkURL           string      `json:"proof_of_work_url"`
+	ProofOfWorkNotes         string      `json:"proof_of_work_notes"`
+	StripeCheckoutSessionID  string      `json:"stripe_checkout_session_id,omitempty"`
+	StripePaymentIntent      string      `json:"stripe_payment_intent,omitempty"`
+	CreatedAt                time.Time   `json:"created_at"`
+	UpdatedAt                time.Time   `json:"updated_at"`
+	Criteria                 []Criterion `json:"criteria,omitempty"`
 }
 
 type Job struct {
@@ -117,7 +119,10 @@ func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error
 
 func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	rows, err := app.DB.Query(
-		`SELECT m.id, m.sow_id, m.title, m.amount, m.order_index, m.deliverables, m.status, m.proof_of_work_url, m.proof_of_work_notes, m.created_at, m.updated_at
+		`SELECT m.id, m.sow_id, m.title, m.amount, m.order_index, m.deliverables, m.status,
+		        m.proof_of_work_url, m.proof_of_work_notes,
+		        COALESCE(m.stripe_checkout_session_id, ''), COALESCE(m.stripe_payment_intent, ''),
+		        m.created_at, m.updated_at
 		 FROM milestones m
 		 JOIN sow s ON m.sow_id = s.id
 		 WHERE s.job_id = ? ORDER BY m.order_index`,
@@ -132,7 +137,9 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	for rows.Next() {
 		var m Milestone
 		if err := rows.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
-			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
+			&m.ProofOfWorkURL, &m.ProofOfWorkNotes,
+			&m.StripeCheckoutSessionID, &m.StripePaymentIntent,
+			sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
 		}
@@ -1280,6 +1287,11 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info("job rejected via UI, reset to UNASSIGNED", "job_id", jobID, "manager_id", managerID)
+
+	// Auto-dismiss any JOB_OFFER notification for this job so the banner is cleared.
+	if err := app.DismissNotificationsByJobID(jobID); err != nil {
+		log.Warn("ui reject job: failed to dismiss job offer notifications", "job_id", jobID, "error", err)
+	}
 
 	j, err := app.getJobDetail(jobID)
 	if err != nil {

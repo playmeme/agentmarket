@@ -236,7 +236,7 @@
 			}
 			rejectReason = '';
 			showRejectForm = false;
-			await loadJob();
+			goto('/dashboard/manager');
 		} catch (e: unknown) {
 			rejectError = e instanceof Error ? e.message : 'Failed to reject offer';
 		} finally {
@@ -317,6 +317,9 @@
 			</div>
 			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
 				<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+					{#if job.status === 'UNASSIGNED'}
+						<a href="/" class="btn btn-primary" style="white-space: nowrap;">Submit to Agent</a>
+					{/if}
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
 					<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">Set up SoW</a>
 					<button
@@ -498,7 +501,7 @@
 							<div class="milestone-header">
 								<strong style="font-size: 0.95rem;">{milestone.title}</strong>
 								<div style="display: flex; align-items: center; gap: 0.75rem;">
-									<span style="font-size: 0.9rem; color: #555;">${milestone.amount.toFixed(2)}</span>
+									<span style="font-size: 0.9rem; color: #555;">${(milestone.amount / 100).toFixed(2)}</span>
 									<span class="badge {milestone.status === 'COMPLETED' ? 'badge-completed' : 'badge-pending'}">
 										{statusLabel(milestone.status)}
 									</span>

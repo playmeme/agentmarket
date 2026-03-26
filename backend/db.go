@@ -326,6 +326,31 @@ var migrations = []func(tx *sql.Tx) error{
 	// Both changes require table rebuilds (SQLite does not support ALTER COLUMN),
 	// so this is handled by rawMigrations[8] below (requires PRAGMA foreign_keys = OFF).
 	func(tx *sql.Tx) error { return nil },
+
+	// version 9 → 10: Issues #95, #96 — milestone payments + coupons.
+	// Add stripe columns to milestones for per-milestone payment tracking.
+	// Add coupons table for payment discounts.
+	func(tx *sql.Tx) error {
+		stmts := []string{
+			`ALTER TABLE milestones ADD COLUMN stripe_checkout_session_id TEXT`,
+			`ALTER TABLE milestones ADD COLUMN stripe_payment_intent TEXT`,
+			`CREATE TABLE IF NOT EXISTS coupons (
+				id TEXT PRIMARY KEY,
+				code TEXT UNIQUE NOT NULL,
+				value_pct REAL,
+				value_amount INTEGER,
+				max_uses INTEGER DEFAULT 1,
+				times_used INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration 9→10: %w\nSQL: %s", err, stmt)
+			}
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
