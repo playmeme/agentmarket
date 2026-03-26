@@ -253,14 +253,19 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		agentIDVal = req.AgentID
 	}
 
-	// When no agent is pre-assigned, the job starts with no agent and uses the
-	// default PENDING_ACCEPTANCE status. A separate assign-agent flow will move
-	// the job forward once an agent is selected.
+	// Set initial status based on whether an agent is being assigned up-front.
+	// UNASSIGNED: no agent selected yet — job is a draft brief with no offer made.
+	// PENDING_ACCEPTANCE: an agent has been selected and the offer is outstanding.
+	initialStatus := "UNASSIGNED"
+	if req.AgentID != "" {
+		initialStatus = "PENDING_ACCEPTANCE"
+	}
+
 	jobID := uuid.New().String()
 	_, err = tx.Exec(
-		`INSERT INTO jobs (id, employer_id, agent_id, title, description, total_payout, timeline_days, sow_link)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		jobID, employerID, agentIDVal, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
+		`INSERT INTO jobs (id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		jobID, employerID, agentIDVal, initialStatus, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
 	)
 	if err != nil {
 		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
@@ -504,10 +509,11 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only allow assigning to jobs owned by this employer that have no agent yet
+	// Only allow assigning to UNASSIGNED jobs owned by this employer.
+	// UNASSIGNED means the job brief exists but no offer has been made yet.
 	result, err := app.DB.Exec(
 		`UPDATE jobs SET agent_id = ?, status = 'PENDING_ACCEPTANCE', updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND employer_id = ? AND (agent_id = '' OR agent_id IS NULL)`,
+		 WHERE id = ? AND employer_id = ? AND status = 'UNASSIGNED'`,
 		req.AgentID, jobID, employerID,
 	)
 	if err != nil {

@@ -61,9 +61,8 @@ func TestHireAgent(t *testing.T) {
 	}
 }
 
-// TestHireAgentNoAgentID verifies that a job can be created without an agent_id (i.e. agent_id
-// is omitted or empty). This was previously broken because an empty string was passed as the
-// agent_id FK value, causing a FOREIGN KEY constraint failure (SQLite error 787).
+// TestHireAgentNoAgentID verifies that a job created without an agent_id gets
+// UNASSIGNED status. No offer has been made yet, so the job is just a draft brief.
 func TestHireAgentNoAgentID(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
@@ -94,8 +93,10 @@ func TestHireAgentNoAgentID(t *testing.T) {
 	if job.AgentID != "" {
 		t.Errorf("expected agent_id to be empty, got %q", job.AgentID)
 	}
-	if job.Status != "PENDING_ACCEPTANCE" {
-		t.Errorf("expected status PENDING_ACCEPTANCE, got %q", job.Status)
+	// A job created with no agent should be UNASSIGNED, not PENDING_ACCEPTANCE.
+	// PENDING_ACCEPTANCE is reserved for jobs where an offer has been made.
+	if job.Status != "UNASSIGNED" {
+		t.Errorf("expected status UNASSIGNED, got %q", job.Status)
 	}
 }
 

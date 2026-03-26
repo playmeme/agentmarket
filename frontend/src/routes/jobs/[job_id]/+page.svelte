@@ -92,6 +92,7 @@
 
 	function statusBadgeClass(status: string): string {
 		const map: Record<string, string> = {
+			UNASSIGNED: 'badge-open',
 			OPEN: 'badge-open',
 			SOW_NEGOTIATION: 'badge-sow',
 			AWAITING_PAYMENT: 'badge-awaiting-payment',
