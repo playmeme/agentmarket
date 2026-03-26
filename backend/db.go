@@ -110,7 +110,7 @@ var migrations = []func(tx *sql.Tx) error{
 
 			`CREATE TABLE IF NOT EXISTS milestones (
 				id TEXT PRIMARY KEY,
-				job_id TEXT NOT NULL REFERENCES jobs(id),
+				sow_id TEXT NOT NULL REFERENCES sow(id),
 				title TEXT NOT NULL,
 				amount INTEGER NOT NULL,
 				order_index INTEGER NOT NULL,
@@ -259,6 +259,14 @@ var migrations = []func(tx *sql.Tx) error{
 	// been made to a specific agent. Because SQLite does not support ALTER TABLE
 	// ... MODIFY COLUMN, we must rebuild the table. This is handled by
 	// rawMigrations[6] below (requires PRAGMA foreign_keys = OFF at connection level).
+	func(tx *sql.Tx) error { return nil },
+
+	// version 7 → 8: Issue #66 — replace milestones.job_id with milestones.sow_id.
+	// Milestones now link directly to their Statement of Work rather than the job.
+	// The job can still be reached by traversing sow.job_id. Because SQLite does
+	// not support DROP COLUMN we rebuild the milestones table. This requires
+	// PRAGMA foreign_keys = OFF at the connection level and is handled by
+	// rawMigrations[7] below.
 	func(tx *sql.Tx) error { return nil },
 }
 
@@ -422,6 +430,85 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 			if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("migration 2→3: set user_version: %w", err)
+			}
+
+			return tx.Commit()
+		})
+	},
+
+	// version 7 → 8: Issue #66 — rebuild milestones to swap job_id for sow_id.
+	// Backfills sow_id from the job→sow relationship before dropping job_id.
+	// Fresh databases created after migration 0 is updated already have the new
+	// schema; we detect this by checking whether sow_id already exists on the table.
+	7: func(db *sql.DB) error {
+		ctx := context.Background()
+
+		// Idempotency check: if sow_id already exists, nothing to do.
+		rows, err := db.QueryContext(ctx, `PRAGMA table_info(milestones)`)
+		if err != nil {
+			return fmt.Errorf("migration 7→8: pragma table_info(milestones): %w", err)
+		}
+		hasSowID := false
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
+				rows.Close()
+				return fmt.Errorf("migration 7→8: scan table_info: %w", scanErr)
+			}
+			if name == "sow_id" {
+				hasSowID = true
+			}
+		}
+		rows.Close()
+		if hasSowID {
+			return nil // Already up to date — fresh database.
+		}
+
+		return complexMigration(db, func(conn *sql.Conn) error {
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("migration 7→8: begin tx: %w", err)
+			}
+
+			stmts := []string{
+				`CREATE TABLE milestones_new (
+					id TEXT PRIMARY KEY,
+					sow_id TEXT NOT NULL REFERENCES sow(id),
+					title TEXT NOT NULL,
+					amount INTEGER NOT NULL,
+					order_index INTEGER NOT NULL,
+					deliverables TEXT NOT NULL DEFAULT '',
+					status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','REVIEW_REQUESTED','APPROVED','PAID')),
+					proof_of_work_url TEXT DEFAULT '',
+					proof_of_work_notes TEXT DEFAULT '',
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				// Backfill: join milestones → sow on sow.job_id = milestones.job_id.
+				// Milestones with no matching sow row are dropped (they were orphaned).
+				`INSERT INTO milestones_new
+				 SELECT m.id, s.id, m.title, m.amount, m.order_index, m.deliverables,
+				        m.status, m.proof_of_work_url, m.proof_of_work_notes,
+				        m.created_at, m.updated_at
+				 FROM milestones m
+				 JOIN sow s ON s.job_id = m.job_id`,
+				`DROP TABLE milestones`,
+				`ALTER TABLE milestones_new RENAME TO milestones`,
+			}
+			for _, stmt := range stmts {
+				if _, execErr := tx.Exec(stmt); execErr != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("migration 7→8 rebuild milestones: %w\nSQL: %s", execErr, stmt)
+				}
+			}
+
+			if _, err := tx.Exec(`PRAGMA user_version = 8`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 7→8: set user_version: %w", err)
 			}
 
 			return tx.Commit()
