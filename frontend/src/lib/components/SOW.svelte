@@ -488,7 +488,7 @@
 					</div>
 					<div style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem;">
 						<span style="width: 10px; height: 10px; border-radius: 50%; background: {sow.agent_accepted ? '#10b981' : '#e5e7eb'}; display: inline-block;"></span>
-						<span>Handler: {sow.agent_accepted ? 'Accepted' : 'Pending'}</span>
+						<span>Agent: {sow.agent_accepted ? 'Accepted' : 'Pending'}</span>
 					</div>
 				</div>
 			</div>

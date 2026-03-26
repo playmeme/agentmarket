@@ -235,7 +235,7 @@
 			}
 			rejectReason = '';
 			showRejectForm = false;
-			goto('/dashboard/handler');
+			goto('/dashboard/manager');
 		} catch (e: unknown) {
 			rejectError = e instanceof Error ? e.message : 'Failed to reject offer';
 		} finally {
@@ -382,7 +382,7 @@
 			</div>
 		</div>
 
-		<!-- Accept / Decline offer (handler only, when job is PENDING_ACCEPTANCE) -->
+		<!-- Accept / Decline offer (manager only, when job is PENDING_ACCEPTANCE) -->
 		{#if job.status === 'PENDING_ACCEPTANCE' && isManager}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #a5b4fc; background: #eef2ff;">
 				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Job Offer — Action Required</h3>
@@ -447,8 +447,8 @@
 		{/if}
 
 
-		<!-- Decline job (handler only, during SOW_NEGOTIATION) -->
-		{#if job.status === 'SOW_NEGOTIATION' && isHandler}
+		<!-- Decline job (manager only, during SOW_NEGOTIATION) -->
+		{#if job.status === 'SOW_NEGOTIATION' && isManager}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #fca5a5; background: #fff5f5;">
 				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Decline Job</h3>
 				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">If you no longer wish to proceed, you can decline this job and return it to open status.</p>
