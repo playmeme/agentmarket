@@ -163,26 +163,33 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 		log.Info("SOW updated", "job_id", jobID, "sow_id", existingID, "user_id", userID)
 	}
 
-	// Update milestones if provided in the request
+	// Update milestones if provided in the request.
+	// Milestones now reference sow_id directly; look up the SOW id for this job.
 	if req.Milestones != nil {
-		// Delete existing milestones and criteria for this job, then re-insert
-		if _, err = app.DB.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`, jobID); err != nil {
-			log.Error("sow upsert: delete criteria error", "job_id", jobID, "error", err)
+		var sowID string
+		if err = app.DB.QueryRow("SELECT id FROM sow WHERE job_id = ?", jobID).Scan(&sowID); err != nil {
+			log.Error("sow upsert: failed to resolve sow_id for milestones", "job_id", jobID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve SOW")
+			return
+		}
+		// Delete existing milestones and criteria for this SOW, then re-insert
+		if _, err = app.DB.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE sow_id = ?)`, sowID); err != nil {
+			log.Error("sow upsert: delete criteria error", "sow_id", sowID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update milestones")
 			return
 		}
-		if _, err = app.DB.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID); err != nil {
-			log.Error("sow upsert: delete milestones error", "job_id", jobID, "error", err)
+		if _, err = app.DB.Exec(`DELETE FROM milestones WHERE sow_id = ?`, sowID); err != nil {
+			log.Error("sow upsert: delete milestones error", "sow_id", sowID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update milestones")
 			return
 		}
 		for i, ms := range req.Milestones {
 			msID := uuid.New().String()
 			if _, err = app.DB.Exec(
-				`INSERT INTO milestones (id, job_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
-				msID, jobID, ms.Title, ms.Amount, i, ms.Deliverables,
+				`INSERT INTO milestones (id, sow_id, title, amount, order_index, deliverables) VALUES (?, ?, ?, ?, ?, ?)`,
+				msID, sowID, ms.Title, ms.Amount, i, ms.Deliverables,
 			); err != nil {
-				log.Error("sow upsert: milestone insert error", "job_id", jobID, "milestone_index", i, "error", err)
+				log.Error("sow upsert: milestone insert error", "sow_id", sowID, "milestone_index", i, "error", err)
 				writeError(w, http.StatusInternalServerError, "failed to create milestone")
 				return
 			}
@@ -198,7 +205,7 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		log.Info("SOW milestones updated", "job_id", jobID, "count", len(req.Milestones))
+		log.Info("SOW milestones updated", "sow_id", sowID, "count", len(req.Milestones))
 	}
 
 	sow, err := app.getSOWByJobID(jobID)
