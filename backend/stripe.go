@@ -76,8 +76,43 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine the charge amount: use the first PENDING milestone if milestones exist,
+	// otherwise fall back to the full SoW price.
+	var currentMilestoneID string
+	var currentMilestoneNumber int
+	var baseAmountCents int64
+
+	var firstMilestoneID string
+	var firstMilestoneAmount int64
+	var firstMilestoneOrderIndex int
+	milestoneErr := app.DB.QueryRow(
+		`SELECT id, amount, order_index FROM milestones
+		 WHERE sow_id = ? AND status = 'PENDING'
+		 ORDER BY order_index ASC LIMIT 1`,
+		sow.ID,
+	).Scan(&firstMilestoneID, &firstMilestoneAmount, &firstMilestoneOrderIndex)
+
+	if milestoneErr == nil {
+		// Milestones exist — charge the first PENDING milestone amount (stored in dollars)
+		currentMilestoneID = firstMilestoneID
+		currentMilestoneNumber = firstMilestoneOrderIndex + 1
+		baseAmountCents = firstMilestoneAmount * 100
+	} else if milestoneErr == sql.ErrNoRows {
+		// No milestones — charge the full SoW amount
+		baseAmountCents = int64(sow.PriceCents)
+	} else {
+		log.Error("checkout: db error fetching first milestone", "job_id", jobID, "sow_id", sow.ID, "error", milestoneErr)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	if baseAmountCents <= 0 {
+		writeError(w, http.StatusBadRequest, "charge amount must be greater than zero")
+		return
+	}
+
 	// --- Coupon handling ---
-	chargeAmountCents := int64(sow.PriceCents)
+	chargeAmountCents := baseAmountCents
 	var appliedCoupon *Coupon
 
 	if reqBody.CouponCode != "" {
@@ -110,10 +145,21 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If the coupon covers the full amount, skip Stripe entirely.
 	if chargeAmountCents <= 0 {
+		// If paying for a specific milestone, mark it PAID first.
+		if currentMilestoneID != "" {
+			if _, dbErr := app.DB.Exec(
+				`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+				currentMilestoneID,
+			); dbErr != nil {
+				log.Error("checkout: failed to mark milestone PAID after full coupon", "milestone_id", currentMilestoneID, "error", dbErr)
+				writeError(w, http.StatusInternalServerError, "database error")
+				return
+			}
+		}
 		// Mark job as IN_PROGRESS directly.
 		_, dbErr := app.DB.Exec(
-			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			jobID,
+			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			nullableString(currentMilestoneID), jobID,
 		)
 		if dbErr != nil {
 			log.Error("checkout: failed to update job to IN_PROGRESS after full coupon", "job_id", jobID, "error", dbErr)
@@ -138,6 +184,13 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
 
+	var productName string
+	if currentMilestoneID != "" {
+		productName = fmt.Sprintf("Job %s — Milestone %d", jobID, currentMilestoneNumber)
+	} else {
+		productName = fmt.Sprintf("Job Payment: %s", jobID)
+	}
+
 	params := &stripe.CheckoutSessionParams{
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		LineItems: []*stripe.CheckoutSessionLineItemParams{
@@ -145,7 +198,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
 					Currency: stripe.String("usd"),
 					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name: stripe.String(fmt.Sprintf("Job Payment: %s", jobID)),
+						Name: stripe.String(productName),
 					},
 					UnitAmount: stripe.Int64(chargeAmountCents),
 				},
@@ -167,10 +220,10 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save checkout session ID to job
+	// Save checkout session ID and current milestone (if any) to job
 	_, err = app.DB.Exec(
-		`UPDATE jobs SET stripe_checkout_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		cs.ID, jobID,
+		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		cs.ID, nullableString(currentMilestoneID), jobID,
 	)
 	if err != nil {
 		log.Error("checkout: failed to save session id", "job_id", jobID, "session_id", cs.ID, "error", err)

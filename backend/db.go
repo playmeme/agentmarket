@@ -345,6 +345,15 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+
+	// version 10 → 11: Issue #95 — add current_milestone_id to jobs for milestone-based payments.
+	// Tracks which milestone is currently being paid for during AWAITING_PAYMENT state.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN current_milestone_id TEXT REFERENCES milestones(id)`); err != nil {
+			return fmt.Errorf("migration 10→11: add current_milestone_id to jobs: %w", err)
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
@@ -702,6 +711,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 			return tx.Commit()
 		})
 	},
+
 }
 
 // complexMigration pins a single connection, disables foreign keys for the duration,

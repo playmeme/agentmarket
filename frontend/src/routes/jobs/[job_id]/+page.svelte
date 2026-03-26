@@ -102,6 +102,26 @@
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
 
+	// The milestone currently being paid for: the first PENDING milestone, if any.
+	// When no milestones exist, falls back to null (full SoW price is charged).
+	function getFirstPendingMilestone(j: Job | null): Milestone | null {
+		if (!j?.milestones) return null;
+		return j.milestones.find((m) => m.status === 'PENDING') ?? null;
+	}
+	function getPaymentAmountCents(j: Job | null, m: Milestone | null): number {
+		if (m != null) return m.amount * 100;
+		return j?.sow?.price_cents ?? 0;
+	}
+	function getMilestoneNumber(j: Job | null, m: Milestone | null): number | null {
+		if (m == null || !j?.milestones) return null;
+		const idx = j.milestones.findIndex((ms) => ms.id === m.id);
+		return idx >= 0 ? idx + 1 : null;
+	}
+
+	const currentPaymentMilestone = $derived(getFirstPendingMilestone(job));
+	const currentPaymentAmountCents = $derived(getPaymentAmountCents(job, currentPaymentMilestone));
+	const currentPaymentMilestoneNumber = $derived(getMilestoneNumber(job, currentPaymentMilestone));
+
 	function statusBadgeClass(status: string): string {
 		const map: Record<string, string> = {
 			UNASSIGNED: 'badge-open',
@@ -153,7 +173,7 @@
 		couponDiscountCents = 0;
 		couponFinalCents = 0;
 		try {
-			const amountCents = job?.sow?.price_cents ?? 0;
+			const amountCents = currentPaymentAmountCents;
 			const res = await apiFetch('/api/ui/coupons/validate', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -548,7 +568,17 @@
 		{#if job.status === 'AWAITING_PAYMENT' && isEmployer}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #fbbf24; background: #fffbeb;">
 				<h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Payment Required</h3>
-				<p style="margin: 0 0 1rem; color: #666; font-size: 0.9rem;">Both parties have agreed to the SoW. Complete payment to start the job.</p>
+				{#if currentPaymentMilestone && currentPaymentMilestoneNumber !== null}
+					<p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9rem;">
+						Authorize payment for <strong>Milestone {currentPaymentMilestoneNumber} — {currentPaymentMilestone.title}</strong>
+						(<strong>${currentPaymentMilestone.amount.toFixed(2)}</strong>) to start the job.
+						The transaction won't complete until deliverables are approved.
+					</p>
+				{:else}
+					<p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9rem;">
+						Both parties have agreed to the SoW. Complete payment to start the job.
+					</p>
+				{/if}
 
 				<!-- Coupon code input -->
 				<div style="margin-bottom: 1rem;">
@@ -609,6 +639,8 @@
 							{couponApplied && couponFinalCents <= 0 ? 'Activating…' : 'Redirecting…'}
 						{:else if couponApplied && couponFinalCents <= 0}
 							Activate (No Charge)
+						{:else if currentPaymentMilestone && currentPaymentMilestoneNumber !== null}
+							Authorize Milestone {currentPaymentMilestoneNumber} (${couponApplied ? (couponFinalCents / 100).toFixed(2) : currentPaymentMilestone.amount.toFixed(2)})
 						{:else}
 							Pay Now
 						{/if}

@@ -160,3 +160,9 @@ func escapeJSON(s string) string {
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
 }
+
+// nullableString converts a Go string to a sql.NullString.
+// An empty string becomes a NULL in the database; non-empty strings are valid.
+func nullableString(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
