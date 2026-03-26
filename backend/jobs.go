@@ -103,6 +103,7 @@ func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error
 		var c Criterion
 		var isVerified int
 		if err := rows.Scan(&c.ID, &c.MilestoneID, &c.Description, &isVerified, &c.CreatedAt); err != nil {
+			slog.Error("load milestone criteria: scan error", "milestone_id", milestoneID, "error", err)
 			return nil, err
 		}
 		c.IsVerified = isVerified == 1
@@ -130,6 +131,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 		var m Milestone
 		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
 		}
 		criteria, err := app.loadCriteriaForMilestone(m.ID)
@@ -552,8 +554,6 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
-	log := slog.With("request_id", requestID(r.Context()), "handler", "list_jobs")
-
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 
@@ -583,7 +583,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		log.Error("list jobs: unknown database error", "user_id", userID, "role", role, "error", err)
+		slog.Error("list jobs: unknown database error", "user_id", userID, "role", role, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -593,7 +593,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		j, err := app.scanJobWithName(rows)
 		if err != nil {
-			log.Error("list jobs: scan error", "user_id", userID, "role", role, "error", err)
+			slog.Error("list jobs: scan error", "user_id", userID, "role", role, "error", err)
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
@@ -642,6 +642,7 @@ func (app *App) GetJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		slog.Error("get job: database error", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
