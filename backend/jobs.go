@@ -1368,7 +1368,7 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := app.DB.Exec(
 		`UPDATE jobs
-		    SET status = 'RETRACTED',
+		    SET status = 'UNASSIGNED',
 		        agent_id = NULL,
 		        stripe_checkout_session_id = NULL,
 		        updated_at = CURRENT_TIMESTAMP
