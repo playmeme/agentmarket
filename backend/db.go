@@ -90,8 +90,8 @@ var migrations = []func(tx *sql.Tx) error{
 				id TEXT PRIMARY KEY,
 				employer_id TEXT NOT NULL REFERENCES users(id),
 				agent_id TEXT REFERENCES agents(id),
-				status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
-					'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
+				status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
+					'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
 					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
 				)),
 				title TEXT NOT NULL,
@@ -252,12 +252,89 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+
+	// version 6 → 7: Issue #65 — add UNASSIGNED status to jobs table.
+	// UNASSIGNED is the initial status for newly created jobs that have no agent
+	// assigned yet. PENDING_ACCEPTANCE is reserved for jobs where an offer has
+	// been made to a specific agent. Because SQLite does not support ALTER TABLE
+	// ... MODIFY COLUMN, we must rebuild the table. This is handled by
+	// rawMigrations[6] below (requires PRAGMA foreign_keys = OFF at connection level).
+	func(tx *sql.Tx) error { return nil },
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
 // *sql.Conn via complexMigration) instead of a *sql.Tx. RunMigrations checks
 // this map first; if an entry exists it is used instead of migrations[i].
 var rawMigrations = map[int]func(db *sql.DB) error{
+	// version 6 → 7: Issue #65 — rebuild jobs table to add UNASSIGNED to the
+	// CHECK constraint and change the default status from PENDING_ACCEPTANCE to
+	// UNASSIGNED. Fresh databases already have UNASSIGNED in the schema from
+	// migration 0 (once that migration is updated), so we check whether UNASSIGNED
+	// is already in the constraint before doing the rebuild.
+	6: func(db *sql.DB) error {
+		ctx := context.Background()
+
+		// Idempotency check: read the current CREATE TABLE statement. If it
+		// already contains 'UNASSIGNED' the rebuild is not needed.
+		var createSQL string
+		err := db.QueryRowContext(ctx,
+			`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`,
+		).Scan(&createSQL)
+		if err != nil {
+			return fmt.Errorf("migration 6→7: read jobs schema: %w", err)
+		}
+		if strings.Contains(createSQL, "UNASSIGNED") {
+			return nil // Already up to date — fresh database.
+		}
+
+		return complexMigration(db, func(conn *sql.Conn) error {
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("migration 6→7: begin tx: %w", err)
+			}
+
+			stmts := []string{
+				`CREATE TABLE jobs_new (
+					id TEXT PRIMARY KEY,
+					employer_id TEXT NOT NULL REFERENCES users(id),
+					agent_id TEXT REFERENCES agents(id),
+					status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
+						'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+					)),
+					title TEXT NOT NULL,
+					description TEXT DEFAULT '',
+					total_payout INTEGER NOT NULL,
+					timeline_days INTEGER NOT NULL,
+					sow_link TEXT DEFAULT '',
+					stripe_payment_intent TEXT,
+					stripe_checkout_session_id TEXT,
+					delivered_at DATETIME,
+					delivery_notes TEXT,
+					delivery_url TEXT,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				`INSERT INTO jobs_new SELECT * FROM jobs`,
+				`DROP TABLE jobs`,
+				`ALTER TABLE jobs_new RENAME TO jobs`,
+			}
+			for _, stmt := range stmts {
+				if _, execErr := tx.Exec(stmt); execErr != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("migration 6→7 rebuild jobs: %w\nSQL: %s", execErr, stmt)
+				}
+			}
+
+			if _, err := tx.Exec(`PRAGMA user_version = 7`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 6→7: set user_version: %w", err)
+			}
+
+			return tx.Commit()
+		})
+	},
+
 	// version 2 → 3: make jobs.agent_id nullable so retracted offers can clear it to NULL.
 	// Existing databases have agent_id NOT NULL; we rebuild via rename/copy/drop.
 	// Fresh databases already have the nullable schema from migration 0.
