@@ -62,7 +62,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT }}
-          envs: GITHUB_SHA,DATABASE_URL,JWT_SECRET,RESEND_API_KEY,STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET
+          envs: GITHUB_SHA,BASE_URL,DATABASE_URL,JWT_SECRET,RESEND_API_KEY,STRIPE_SECRET_KEY,STRIPE_WEBHOOK_SECRET
           script: |
             set -e
             SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)
@@ -73,6 +73,7 @@ jobs:
             # Overwrite the environment file on the server to match Github secrets
             cat <<EOF > ~/.config/containers/webapp.env
             SHORT_SHA=${SHORT_SHA}
+            BASE_URL=${BASE_URL}
             DATABASE_URL=${DATABASE_URL}
             JWT_SECRET=${JWT_SECRET}
             RESEND_API_KEY=${RESEND_API_KEY}
@@ -88,12 +89,13 @@ jobs:
             systemctl --user restart webapp.service
             podman image prune -f
         env:
+          GITHUB_SHA: ${{ github.sha }}
+          BASE_URL: "https://agentictemp.com"
           DATABASE_URL: "./data/agentmarket.db"
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          GITHUB_SHA: ${{ github.sha }}
 
   # ==========================================
   # FRONTEND: Build & Deploy (Only if frontend changed)

@@ -44,7 +44,7 @@ func LoadConfig() *Config {
 	stripePublishableKey := os.Getenv("STRIPE_PUBLISHABLE_KEY")
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:8080"
+		baseURL = "https://agentictemp.com"
 	}
 
 	slog.Info("config loaded", "port", port, "database_url_set", dsName != "")
