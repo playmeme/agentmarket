@@ -1119,6 +1119,183 @@ func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
+// UIAcceptJobHandler allows an AGENT_HANDLER to accept a job offer via the UI (JWT auth).
+// This mirrors AcceptJobHandler (which uses API key auth) but is called from the web frontend.
+// POST /api/ui/jobs/{id}/accept
+func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_accept_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_HANDLER" {
+		log.Warn("authz failure: accept job requires AGENT_HANDLER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can accept job offers")
+		return
+	}
+
+	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	// Load job — verify it belongs to one of this handler's agents and is awaiting acceptance.
+	var totalPayout int64
+	var timelineDays int
+	var agentID string
+	err := app.DB.QueryRow(
+		`SELECT j.total_payout, j.timeline_days, j.agent_id
+		   FROM jobs j
+		   JOIN agents a ON j.agent_id = a.id
+		  WHERE j.id = ? AND a.handler_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		jobID, handlerID,
+	).Scan(&totalPayout, &timelineDays, &agentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		return
+	}
+	if err != nil {
+		log.Error("ui accept job: db error", "job_id", jobID, "handler_id", handlerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("ui accept job: begin transaction error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(
+		`UPDATE jobs SET status = 'SOW_NEGOTIATION', updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		jobID, agentID,
+	)
+	if err != nil {
+		log.Error("ui accept job: update error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		return
+	}
+
+	sowID := uuid.New().String()
+	_, err = tx.Exec(
+		`INSERT INTO sow (id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted)
+		 VALUES (?, ?, '', '', ?, ?, 0, 0)`,
+		sowID, jobID, totalPayout, timelineDays,
+	)
+	if err != nil {
+		log.Error("ui accept job: failed to create default SOW", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create default SOW")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("ui accept job: commit error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("job accepted via UI, moved to SOW_NEGOTIATION", "job_id", jobID, "handler_id", handlerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("ui accept job: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifJobOfferAccepted,
+		"Job offer accepted: "+j.Title,
+		"Your job offer has been accepted. SOW negotiation has begun.")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
+// UIRejectJobHandler allows an AGENT_HANDLER to reject a job offer via the UI (JWT auth).
+// The job is reset to UNASSIGNED (agent cleared) and the employer is notified with the reason.
+// POST /api/ui/jobs/{id}/reject
+func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_reject_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_HANDLER" {
+		log.Warn("authz failure: reject job requires AGENT_HANDLER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can reject job offers")
+		return
+	}
+
+	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "id")
+
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "reason is required when rejecting a job offer")
+		return
+	}
+
+	// Verify the job belongs to one of this handler's agents and is awaiting acceptance.
+	var agentID string
+	err := app.DB.QueryRow(
+		`SELECT j.agent_id
+		   FROM jobs j
+		   JOIN agents a ON j.agent_id = a.id
+		  WHERE j.id = ? AND a.handler_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		jobID, handlerID,
+	).Scan(&agentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		return
+	}
+	if err != nil {
+		log.Error("ui reject job: db error", "job_id", jobID, "handler_id", handlerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	// Reset the job to UNASSIGNED, clearing the agent assignment.
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		jobID, agentID,
+	)
+	if err != nil {
+		log.Error("ui reject job: update error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		return
+	}
+
+	log.Info("job rejected via UI, reset to UNASSIGNED", "job_id", jobID, "handler_id", handlerID)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("ui reject job: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifJobOfferRejected,
+		"Job offer declined: "+j.Title,
+		"Your job offer was declined. Reason: "+req.Reason)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
 // RetractOfferHandler allows an employer to retract a job offer before both parties have
 // committed via payment. Retraction is permitted while the job is in any of:
 //   - PENDING_ACCEPTANCE  — agent has not yet accepted
@@ -1686,7 +1863,7 @@ func (app *App) DeleteJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Delete child rows in dependency order.
 	if _, err = tx.Exec(
-		`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE job_id = ?)`,
+		`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?))`,
 		jobID,
 	); err != nil {
 		log.Error("delete job: failed to delete criteria", "job_id", jobID, "error", err)
@@ -1694,7 +1871,7 @@ func (app *App) DeleteJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err = tx.Exec(`DELETE FROM milestones WHERE job_id = ?`, jobID); err != nil {
+	if _, err = tx.Exec(`DELETE FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?)`, jobID); err != nil {
 		log.Error("delete job: failed to delete milestones", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete job")
 		return
