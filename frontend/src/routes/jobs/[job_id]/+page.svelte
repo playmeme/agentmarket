@@ -325,6 +325,9 @@
 				<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
 					<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">Set up SoW</a>
+					{#if job.status === 'UNASSIGNED'}
+						<a href="/" class="btn btn-secondary" style="white-space: nowrap;">Submit to Agent</a>
+					{/if}
 					<button
 						type="button"
 						class="btn btn-secondary"
