@@ -11,6 +11,51 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// sqliteTime is a sql.Scanner that accepts the string values that
+// modernc.org/sqlite returns for DATETIME/TIMESTAMP columns and converts
+// them into a *time.Time. SQLite stores timestamps as text (RFC 3339 or
+// the "2006-01-02 15:04:05" format produced by CURRENT_TIMESTAMP), and
+// the pure-Go modernc.org/sqlite driver does not automatically coerce
+// those strings to time.Time — so scanning directly into a *time.Time
+// field fails with "unsupported Scan … type string into type *time.Time".
+//
+// Usage: scan into sqliteTime{&myStruct.CreatedAt} instead of &myStruct.CreatedAt.
+type sqliteTime struct{ t *time.Time }
+
+// sqliteTimeFormats lists the timestamp layouts that SQLite / CURRENT_TIMESTAMP
+// can produce, in the order we try them.
+var sqliteTimeFormats = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.999999999Z07:00",
+}
+
+func (s sqliteTime) Scan(src interface{}) error {
+	if src == nil {
+		*s.t = time.Time{}
+		return nil
+	}
+	switch v := src.(type) {
+	case time.Time:
+		*s.t = v
+		return nil
+	case string:
+		for _, layout := range sqliteTimeFormats {
+			if t, err := time.Parse(layout, v); err == nil {
+				*s.t = t
+				return nil
+			}
+		}
+		return fmt.Errorf("sqliteTime: cannot parse %q as a timestamp", v)
+	case []byte:
+		return sqliteTime{s.t}.Scan(string(v))
+	default:
+		return fmt.Errorf("sqliteTime: unsupported type %T", src)
+	}
+}
+
 func InitDB(cfg *Config) (*sql.DB, error) {
 	dsn := cfg.DSName
 	if dsn == "" {

@@ -98,7 +98,7 @@ func (app *App) GetNotifications(userID string) ([]Notification, error) {
 		var read, dismissed int
 		var jobID sql.NullString
 		if err := rows.Scan(&n.ID, &n.UserID, &jobID, &n.Type, &n.Title, &n.Message,
-			&read, &dismissed, &n.CreatedAt); err != nil {
+			&read, &dismissed, sqliteTime{&n.CreatedAt}); err != nil {
 			return nil, err
 		}
 		if jobID.Valid {

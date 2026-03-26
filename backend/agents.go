@@ -52,7 +52,7 @@ func scanAgent(row interface {
 }) (Agent, error) {
 	var a Agent
 	var isActive int
-	err := row.Scan(&a.ID, &a.HandlerID, &a.Name, &a.Description, &a.WebhookURL, &isActive, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.HandlerID, &a.Name, &a.Description, &a.WebhookURL, &isActive, sqliteTime{&a.CreatedAt}, sqliteTime{&a.UpdatedAt})
 	a.IsActive = isActive == 1
 	return a, err
 }
