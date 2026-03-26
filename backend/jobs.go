@@ -102,7 +102,7 @@ func (app *App) loadCriteriaForMilestone(milestoneID string) ([]Criterion, error
 	for rows.Next() {
 		var c Criterion
 		var isVerified int
-		if err := rows.Scan(&c.ID, &c.MilestoneID, &c.Description, &isVerified, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.MilestoneID, &c.Description, &isVerified, sqliteTime{&c.CreatedAt}); err != nil {
 			slog.Error("load milestone criteria: scan error", "milestone_id", milestoneID, "error", err)
 			return nil, err
 		}
@@ -131,8 +131,8 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	var milestones []Milestone
 	for rows.Next() {
 		var m Milestone
-		if err := rows.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
-			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
 		}
@@ -153,7 +153,7 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	var j Job
 	var agentID, sowLink, stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.CreatedAt, &j.UpdatedAt)
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt})
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -174,7 +174,7 @@ func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Jo
 	var j Job
 	var agentID, sowLink, stripe sql.NullString
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.CreatedAt, &j.UpdatedAt, &j.AgentName)
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt}, &j.AgentName)
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -643,8 +643,8 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
-		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
@@ -878,8 +878,8 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
-		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, &m.CreatedAt, &m.UpdatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 		log.Error("milestone submit: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
