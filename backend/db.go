@@ -110,7 +110,7 @@ var migrations = []func(tx *sql.Tx) error{
 
 			`CREATE TABLE IF NOT EXISTS users (
 				id TEXT PRIMARY KEY,
-				role TEXT NOT NULL CHECK(role IN ('EMPLOYER','AGENT_HANDLER')),
+				role TEXT NOT NULL CHECK(role IN ('EMPLOYER','AGENT_MANAGER')),
 				name TEXT NOT NULL,
 				handle TEXT UNIQUE NOT NULL,
 				email TEXT UNIQUE NOT NULL,
@@ -124,7 +124,7 @@ var migrations = []func(tx *sql.Tx) error{
 
 			`CREATE TABLE IF NOT EXISTS agents (
 				id TEXT PRIMARY KEY,
-				handler_id TEXT NOT NULL REFERENCES users(id),
+				manager_id TEXT NOT NULL REFERENCES users(id),
 				name TEXT NOT NULL,
 				description TEXT DEFAULT '',
 				api_key_hash TEXT NOT NULL,
@@ -318,6 +318,13 @@ var migrations = []func(tx *sql.Tx) error{
 	// not support DROP COLUMN we rebuild the milestones table. This requires
 	// PRAGMA foreign_keys = OFF at the connection level and is handled by
 	// rawMigrations[7] below.
+	func(tx *sql.Tx) error { return nil },
+
+	// version 8 → 9: Issue #88 — rename AGENT_HANDLER → AGENT_MANAGER.
+	// Renames handler_id → manager_id in the agents table and updates the role
+	// CHECK constraint in the users table from AGENT_HANDLER to AGENT_MANAGER.
+	// Both changes require table rebuilds (SQLite does not support ALTER COLUMN),
+	// so this is handled by rawMigrations[8] below (requires PRAGMA foreign_keys = OFF).
 	func(tx *sql.Tx) error { return nil },
 }
 
@@ -560,6 +567,99 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 			if _, err := tx.Exec(`PRAGMA user_version = 8`); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("migration 7→8: set user_version: %w", err)
+			}
+
+			return tx.Commit()
+		})
+	},
+
+	// version 8 → 9: Issue #88 — rename AGENT_HANDLER → AGENT_MANAGER.
+	// Rebuilds the users table (to update the role CHECK constraint) and the
+	// agents table (to rename handler_id → manager_id). Existing AGENT_HANDLER
+	// role values are updated to AGENT_MANAGER during the migration.
+	// Requires PRAGMA foreign_keys = OFF at the connection level.
+	8: func(db *sql.DB) error {
+		ctx := context.Background()
+
+		// Idempotency check: if the agents table already has manager_id, nothing to do.
+		rows, err := db.QueryContext(ctx, `PRAGMA table_info(agents)`)
+		if err != nil {
+			return fmt.Errorf("migration 8→9: pragma table_info(agents): %w", err)
+		}
+		hasManagerID := false
+		for rows.Next() {
+			var cid int
+			var name, colType string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if scanErr := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); scanErr != nil {
+				rows.Close()
+				return fmt.Errorf("migration 8→9: scan table_info: %w", scanErr)
+			}
+			if name == "manager_id" {
+				hasManagerID = true
+			}
+		}
+		rows.Close()
+		if hasManagerID {
+			return nil // Already up to date — fresh database.
+		}
+
+		return complexMigration(db, func(conn *sql.Conn) error {
+			tx, err := conn.BeginTx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("migration 8→9: begin tx: %w", err)
+			}
+
+			stmts := []string{
+				// Step 1: update role values in users before rebuilding the table.
+				`UPDATE users SET role = 'AGENT_MANAGER' WHERE role = 'AGENT_HANDLER'`,
+
+				// Step 2: rebuild users table with updated CHECK constraint.
+				`CREATE TABLE users_new (
+					id TEXT PRIMARY KEY,
+					role TEXT NOT NULL CHECK(role IN ('EMPLOYER','AGENT_MANAGER')),
+					name TEXT NOT NULL,
+					handle TEXT UNIQUE NOT NULL,
+					email TEXT UNIQUE NOT NULL,
+					password_hash TEXT NOT NULL,
+					email_verified_at DATETIME,
+					stripe_customer_id TEXT,
+					stripe_account_id TEXT,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				`INSERT INTO users_new SELECT * FROM users`,
+				`DROP TABLE users`,
+				`ALTER TABLE users_new RENAME TO users`,
+
+				// Step 3: rebuild agents table renaming handler_id → manager_id.
+				`CREATE TABLE agents_new (
+					id TEXT PRIMARY KEY,
+					manager_id TEXT NOT NULL REFERENCES users(id),
+					name TEXT NOT NULL,
+					description TEXT DEFAULT '',
+					api_key_hash TEXT NOT NULL,
+					webhook_url TEXT DEFAULT '',
+					is_active INTEGER DEFAULT 1,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				`INSERT INTO agents_new SELECT id, handler_id, name, description, api_key_hash, webhook_url, is_active, created_at, updated_at FROM agents`,
+				`DROP TABLE agents`,
+				`ALTER TABLE agents_new RENAME TO agents`,
+			}
+			for _, stmt := range stmts {
+				if _, execErr := tx.Exec(stmt); execErr != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("migration 8→9: %w\nSQL: %s", execErr, stmt)
+				}
+			}
+
+			if _, err := tx.Exec(`PRAGMA user_version = 9`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 8→9: set user_version: %w", err)
 			}
 
 			return tx.Commit()

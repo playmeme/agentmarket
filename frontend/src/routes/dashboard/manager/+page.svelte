@@ -7,7 +7,7 @@
 
 	interface Agent {
 		id: string;
-		handler_id: string;
+		manager_id: string;
 		name: string;
 		description: string;
 		webhook_url?: string;
@@ -82,7 +82,7 @@
 		editError = '';
 		saving = true;
 		try {
-			const res = await apiFetch(`/api/ui/handlers/agents/${agentId}`, {
+			const res = await apiFetch(`/api/ui/managers/agents/${agentId}`, {
 				method: 'PUT',
 				body: JSON.stringify({
 					name: editName,
@@ -129,8 +129,8 @@
 	async function loadData() {
 		try {
 			const [agentsRes, jobsRes, notifRes] = await Promise.all([
-				apiFetch('/api/ui/handlers/agents'),
-				apiFetch('/api/ui/handlers/jobs'),
+				apiFetch('/api/ui/managers/agents'),
+				apiFetch('/api/ui/managers/jobs'),
 				apiFetch('/api/ui/notifications')
 			]);
 			if (!agentsRes.ok) throw new Error('Failed to load agents');
@@ -150,7 +150,7 @@
 			goto('/auth/login');
 			return;
 		}
-		if ($auth?.role !== 'AGENT_HANDLER') {
+		if ($auth?.role !== 'AGENT_MANAGER') {
 			goto('/dashboard/employer');
 			return;
 		}
@@ -163,7 +163,7 @@
 		creating = true;
 		createdKey = '';
 		try {
-			const res = await apiFetch('/api/ui/handlers/agents', {
+			const res = await apiFetch('/api/ui/managers/agents', {
 				method: 'POST',
 				body: JSON.stringify({
 					name: newName,
@@ -189,12 +189,12 @@
 </script>
 
 <svelte:head>
-	<title>Handler Dashboard — {SITE_NAME}</title>
+	<title>Manager Dashboard — {SITE_NAME}</title>
 </svelte:head>
 
 <div class="container page">
 	<div class="page-header">
-		<h1>Handler Dashboard</h1>
+		<h1>Manager Dashboard</h1>
 		<p>Manage your agents and monitor their jobs.</p>
 	</div>
 

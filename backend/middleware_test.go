@@ -116,8 +116,8 @@ func TestAPIKeyAuthValid(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	_, plainKey := createTestAgent(t, app, handlerID)
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	_, plainKey := createTestAgent(t, app, managerID)
 
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+plainKey)

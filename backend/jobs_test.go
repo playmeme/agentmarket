@@ -7,11 +7,11 @@ import (
 )
 
 // setupJobFixtures creates a verified employer, an agent handler, an agent, and returns them.
-func setupJobFixtures(t *testing.T, app *App) (employerID, handlerID, agentID, agentAPIKey string) {
+func setupJobFixtures(t *testing.T, app *App) (employerID, managerID, agentID, agentAPIKey string) {
 	t.Helper()
 	employerID, _ = createVerifiedTestUser(t, app, "EMPLOYER")
-	handlerID, _ = createTestUser(t, app, "AGENT_HANDLER")
-	agentID, agentAPIKey = createTestAgent(t, app, handlerID)
+	managerID, _ = createTestUser(t, app, "AGENT_MANAGER")
+	agentID, agentAPIKey = createTestAgent(t, app, managerID)
 	return
 }
 
@@ -115,14 +115,14 @@ func TestHireAgentWrongRole(t *testing.T) {
 	app := setupTestApp(t)
 	router := NewRouter(app)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	token := makeAuthToken(t, app, handlerID, "AGENT_HANDLER")
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	token := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
 	_, _, agentID, _ := setupJobFixtures(t, app)
 
 	body := HireRequest{AgentID: agentID, Title: "Work", TotalPayout: 100, TimelineDays: 1}
 	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire", body, token)
 	if rr.Code != http.StatusForbidden {
-		t.Errorf("expected 403 for AGENT_HANDLER role, got %d", rr.Code)
+		t.Errorf("expected 403 for AGENT_MANAGER role, got %d", rr.Code)
 	}
 }
 

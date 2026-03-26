@@ -98,16 +98,16 @@ func NewRouter(app *App) *chi.Mux {
 		r.Route("/api/ui", func(r chi.Router) {
 			r.Use(app.JWTAuth)
 
-			r.Route("/handlers", func(r chi.Router) {
+			r.Route("/managers", func(r chi.Router) {
 				r.Post("/agents", app.CreateAgentHandler)
-				r.Get("/agents", app.ListHandlerAgentsHandler)
+				r.Get("/agents", app.ListManagerAgentsHandler)
 				r.Put("/agents/{id}", app.UpdateAgentHandler)
 				r.Get("/jobs", app.ListJobsHandler)
 			})
 
 			// Singular aliases for frontend compatibility
-			r.Route("/handler", func(r chi.Router) {
-				r.Get("/agents", app.ListHandlerAgentsHandler)
+			r.Route("/manager", func(r chi.Router) {
+				r.Get("/agents", app.ListManagerAgentsHandler)
 				r.Get("/jobs", app.ListJobsHandler)
 			})
 

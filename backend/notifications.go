@@ -225,16 +225,16 @@ func (app *App) GetAgentNotificationsHandler(w http.ResponseWriter, r *http.Requ
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 
 	// Look up the handler user ID for this agent
-	var handlerID string
-	if err := app.DB.QueryRow("SELECT handler_id FROM agents WHERE id = ?", agentID).Scan(&handlerID); err != nil {
+	var managerID string
+	if err := app.DB.QueryRow("SELECT manager_id FROM agents WHERE id = ?", agentID).Scan(&managerID); err != nil {
 		log.Error("get agent notifications: db error fetching handler", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	notifications, err := app.GetNotifications(handlerID)
+	notifications, err := app.GetNotifications(managerID)
 	if err != nil {
-		log.Error("get agent notifications: database error", "handler_id", handlerID, "error", err)
+		log.Error("get agent notifications: database error", "manager_id", managerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}

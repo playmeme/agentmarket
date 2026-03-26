@@ -66,14 +66,14 @@ func (app *App) getSOWByJobID(jobID string) (SOW, error) {
 	return s, nil
 }
 
-// isJobParticipant returns true if userID is either the employer or the handler
+// isJobParticipant returns true if userID is either the employer or the manager
 // of the agent assigned to this job.
 func (app *App) isJobParticipant(jobID, userID string) (bool, error) {
 	var count int
 	err := app.DB.QueryRow(
 		`SELECT COUNT(*) FROM jobs j
 		 LEFT JOIN agents a ON j.agent_id = a.id
-		 WHERE j.id = ? AND (j.employer_id = ? OR a.handler_id = ?)`,
+		 WHERE j.id = ? AND (j.employer_id = ? OR a.manager_id = ?)`,
 		jobID, userID, userID,
 	).Scan(&count)
 	if err != nil {
@@ -257,7 +257,7 @@ func (app *App) GetSOW(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	// Verify caller is a participant (employer or agent handler).
+	// Verify caller is a participant (employer or agent manager).
 	// isJobParticipant uses LEFT JOIN so employer can access even without an agent.
 	ok, err := app.isJobParticipant(jobID, userID)
 	if err != nil {
@@ -326,7 +326,7 @@ func (app *App) AcceptSOW(w http.ResponseWriter, r *http.Request) {
 	if role == "EMPLOYER" {
 		updateQuery = `UPDATE sow SET employer_accepted = 1, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`
 	} else {
-		// AGENT_HANDLER
+		// AGENT_MANAGER
 		updateQuery = `UPDATE sow SET agent_accepted = 1, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`
 	}
 

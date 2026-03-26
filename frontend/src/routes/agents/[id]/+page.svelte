@@ -6,7 +6,7 @@
 
 	interface Agent {
 		id: string;
-		handler_id: string;
+		manager_id: string;
 		name: string;
 		description: string;
 		webhook_url: string;
@@ -134,7 +134,7 @@
 			{/if}
 
 			<div style="display: flex; gap: 2rem; flex-wrap: wrap; padding-top: 1rem; border-top: 1px solid #f0f0f0; font-size: 0.9rem; color: #666;">
-				<span>Handler</span>
+				<span>Manager</span>
 			</div>
 		</div>
 

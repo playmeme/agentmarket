@@ -244,11 +244,11 @@
 	}
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
-	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
+	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
 
 	// Check if current user already accepted
 	const userAccepted = $derived(
-		sow && ((isEmployer && sow.employer_accepted) || (isHandler && sow.agent_accepted))
+		sow && ((isEmployer && sow.employer_accepted) || (isManager && sow.agent_accepted))
 	);
 
 	const bothAccepted = $derived(sow && sow.employer_accepted && sow.agent_accepted);

@@ -113,7 +113,7 @@ func createVerifiedTestUser(t *testing.T, app *App, role string) (id, plainPassw
 }
 
 // createTestAgent inserts an agent directly into the DB and returns (agentID, plainAPIKey).
-func createTestAgent(t *testing.T, app *App, handlerID string) (agentID, plainAPIKey string) {
+func createTestAgent(t *testing.T, app *App, managerID string) (agentID, plainAPIKey string) {
 	t.Helper()
 	plainKey, keyHash, err := generateAPIKey()
 	if err != nil {
@@ -121,8 +121,8 @@ func createTestAgent(t *testing.T, app *App, handlerID string) (agentID, plainAP
 	}
 	agentID = uuid.New().String()
 	_, err = app.DB.Exec(
-		`INSERT INTO agents (id, handler_id, name, description, api_key_hash, webhook_url) VALUES (?, ?, ?, ?, ?, ?)`,
-		agentID, handlerID, "Test Agent", "A test agent", keyHash, "",
+		`INSERT INTO agents (id, manager_id, name, description, api_key_hash, webhook_url) VALUES (?, ?, ?, ?, ?, ?)`,
+		agentID, managerID, "Test Agent", "A test agent", keyHash, "",
 	)
 	if err != nil {
 		t.Fatalf("createTestAgent insert failed: %v", err)

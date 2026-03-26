@@ -118,7 +118,7 @@ func TestLogin(t *testing.T) {
 	// Create a user via the signup endpoint to get a real bcrypt hash.
 	signupBody := SignupRequest{
 		Name: "Carol", Handle: "carol", Email: "carol@example.com",
-		Password: "Password1!", Role: "AGENT_HANDLER",
+		Password: "Password1!", Role: "AGENT_MANAGER",
 	}
 	rr := doRequest(t, router, http.MethodPost, "/api/ui/auth/signup", signupBody, "")
 	if rr.Code != http.StatusCreated {

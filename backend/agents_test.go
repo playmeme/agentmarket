@@ -50,15 +50,15 @@ func TestCreateAgent(t *testing.T) {
 	app := setupTestApp(t)
 	router := NewRouter(app)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	token := makeAuthToken(t, app, handlerID, "AGENT_HANDLER")
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	token := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
 
 	body := CreateAgentRequest{
 		Name:        "My Agent",
 		Description: "Does stuff",
 		WebhookURL:  "https://hooks.example.com/agent",
 	}
-	rr := doRequest(t, router, http.MethodPost, "/api/ui/handlers/agents", body, token)
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/managers/agents", body, token)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -76,8 +76,8 @@ func TestCreateAgent(t *testing.T) {
 	if resp.Agent.Name != body.Name {
 		t.Errorf("expected name %q, got %q", body.Name, resp.Agent.Name)
 	}
-	if resp.Agent.HandlerID != handlerID {
-		t.Errorf("expected handler_id %q, got %q", handlerID, resp.Agent.HandlerID)
+	if resp.Agent.ManagerID != managerID {
+		t.Errorf("expected manager_id %q, got %q", managerID, resp.Agent.ManagerID)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestCreateAgentUnauthenticated(t *testing.T) {
 	router := NewRouter(app)
 
 	body := CreateAgentRequest{Name: "Sneaky Agent"}
-	rr := doRequest(t, router, http.MethodPost, "/api/ui/handlers/agents", body, "")
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/managers/agents", body, "")
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rr.Code)
 	}
@@ -103,7 +103,7 @@ func TestCreateAgentWrongRole(t *testing.T) {
 	token := makeAuthToken(t, app, employerID, "EMPLOYER")
 
 	body := CreateAgentRequest{Name: "Nope Agent"}
-	rr := doRequest(t, router, http.MethodPost, "/api/ui/handlers/agents", body, token)
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/managers/agents", body, token)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", rr.Code)
 	}
@@ -114,12 +114,12 @@ func TestListAgentsAfterCreate(t *testing.T) {
 	app := setupTestApp(t)
 	router := NewRouter(app)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	handlerToken := makeAuthToken(t, app, handlerID, "AGENT_HANDLER")
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	handlerToken := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
 
 	// Create two agents.
 	for i := 0; i < 2; i++ {
-		rr := doRequest(t, router, http.MethodPost, "/api/ui/handlers/agents",
+		rr := doRequest(t, router, http.MethodPost, "/api/ui/managers/agents",
 			CreateAgentRequest{Name: "Agent"}, handlerToken)
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("create agent %d: expected 201, got %d", i, rr.Code)
@@ -146,8 +146,8 @@ func TestGetAgent(t *testing.T) {
 	app := setupTestApp(t)
 	router := NewRouter(app)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	agentID, _ := createTestAgent(t, app, handlerID)
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	agentID, _ := createTestAgent(t, app, managerID)
 
 	// Any authenticated user can get an agent by ID.
 	userID, _ := createTestUser(t, app, "EMPLOYER")
@@ -170,8 +170,8 @@ func TestGetAgent_Unauthenticated(t *testing.T) {
 	app := setupTestApp(t)
 	router := NewRouter(app)
 
-	handlerID, _ := createTestUser(t, app, "AGENT_HANDLER")
-	agentID, _ := createTestAgent(t, app, handlerID)
+	managerID, _ := createTestUser(t, app, "AGENT_MANAGER")
+	agentID, _ := createTestAgent(t, app, managerID)
 
 	// Anonymous users should also be able to fetch a single agent.
 	rr := doRequest(t, router, http.MethodGet, "/api/ui/agents/"+agentID, nil, "")
