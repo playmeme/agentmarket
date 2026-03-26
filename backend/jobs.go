@@ -131,7 +131,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 	var milestones []Milestone
 	for rows.Next() {
 		var m Milestone
-		if err := rows.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+		if err := rows.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
@@ -643,7 +643,7 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
@@ -878,7 +878,7 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
-	if err := row.Scan(&m.ID, &m.JobID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 		log.Error("milestone submit: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
