@@ -21,6 +21,7 @@
 		id: string;
 		employer_id: string;
 		agent_id: string;
+		agent_name?: string;
 		title: string;
 		status: string;
 		total_payout: number;
@@ -339,7 +340,7 @@
 						{#each jobs as job}
 							<tr>
 								<td><a href="/jobs/{job.id}" style="font-weight: 600; color: #1a1a1a; text-decoration: none;">{job.title}</a></td>
-								<td style="font-size: 0.88rem;">Agent #{job.agent_id.slice(0, 8)}</td>
+								<td style="font-size: 0.88rem;">{job.agent_name || job.agent_id.slice(0, 8)}</td>
 								<td style="font-size: 0.88rem; color: #666;">Employer</td>
 								<td><span class="badge {statusBadge(job.status)}">{statusLabel(job.status)}</span></td>
 								<td style="font-variant-numeric: tabular-nums;">${job.total_payout.toFixed(2)}</td>

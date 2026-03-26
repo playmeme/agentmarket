@@ -86,6 +86,12 @@
 	let retractError = $state('');
 	let deleting = $state(false);
 	let deleteError = $state('');
+	let acceptLoading = $state(false);
+	let acceptError = $state('');
+	let rejectLoading = $state(false);
+	let rejectError = $state('');
+	let rejectReason = $state('');
+	let showRejectForm = $state(false);
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
@@ -191,6 +197,50 @@
 			deleteError = e instanceof Error ? e.message : 'Failed to delete job';
 		} finally {
 			deleting = false;
+		}
+	}
+
+	async function handleAcceptOffer() {
+		acceptLoading = true;
+		acceptError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/accept`, { method: 'POST' });
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to accept offer' }));
+				throw new Error(err.error || 'Failed to accept offer');
+			}
+			await loadJob();
+		} catch (e: unknown) {
+			acceptError = e instanceof Error ? e.message : 'Failed to accept offer';
+		} finally {
+			acceptLoading = false;
+		}
+	}
+
+	async function handleRejectOffer() {
+		if (!rejectReason.trim()) {
+			rejectError = 'Please provide a reason for rejection.';
+			return;
+		}
+		rejectLoading = true;
+		rejectError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/reject`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ reason: rejectReason.trim() })
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to reject offer' }));
+				throw new Error(err.error || 'Failed to reject offer');
+			}
+			rejectReason = '';
+			showRejectForm = false;
+			await loadJob();
+		} catch (e: unknown) {
+			rejectError = e instanceof Error ? e.message : 'Failed to reject offer';
+		} finally {
+			rejectLoading = false;
 		}
 	}
 
@@ -325,6 +375,70 @@
 				{/if}
 			</div>
 		</div>
+
+		<!-- Accept / Reject offer (handler only, when job is PENDING_ACCEPTANCE) -->
+		{#if job.status === 'PENDING_ACCEPTANCE' && isHandler}
+			<div class="card" style="margin-bottom: 1.5rem; border-color: #a5b4fc; background: #eef2ff;">
+				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Job Offer — Action Required</h3>
+				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">You have received a job offer. Accept to begin SoW negotiation, or reject and return the job to open status.</p>
+
+				{#if acceptError}
+					<div class="alert alert-error" style="margin-bottom: 0.75rem;">{acceptError}</div>
+				{/if}
+
+				{#if !showRejectForm}
+					<div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+						<button
+							class="btn btn-primary"
+							onclick={handleAcceptOffer}
+							disabled={acceptLoading || rejectLoading}
+						>
+							{acceptLoading ? 'Accepting…' : 'Accept Offer'}
+						</button>
+						<button
+							class="btn btn-secondary"
+							style="color: #991b1b; border-color: #fca5a5;"
+							onclick={() => { showRejectForm = true; rejectError = ''; }}
+							disabled={acceptLoading}
+						>
+							Reject Offer
+						</button>
+					</div>
+				{:else}
+					<div>
+						{#if rejectError}
+							<div class="alert alert-error" style="margin-bottom: 0.75rem;">{rejectError}</div>
+						{/if}
+						<div class="form-group" style="margin-bottom: 0.75rem;">
+							<label for="reject-reason" style="font-weight: 600; font-size: 0.9rem;">Reason for rejection <span style="color: #991b1b;">*</span></label>
+							<textarea
+								id="reject-reason"
+								bind:value={rejectReason}
+								placeholder="Please explain why you are declining this offer. This message will be sent to the employer."
+								style="min-height: 80px; margin-top: 0.35rem;"
+							></textarea>
+						</div>
+						<div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+							<button
+								class="btn btn-secondary"
+								style="color: #991b1b; border-color: #fca5a5;"
+								onclick={handleRejectOffer}
+								disabled={rejectLoading}
+							>
+								{rejectLoading ? 'Rejecting…' : 'Confirm Rejection'}
+							</button>
+							<button
+								class="btn"
+								onclick={() => { showRejectForm = false; rejectReason = ''; rejectError = ''; }}
+								disabled={rejectLoading}
+							>
+								Cancel
+							</button>
+						</div>
+					</div>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Awaiting payment — Pay Now button (employer only) -->
 		{#if job.status === 'AWAITING_PAYMENT' && isEmployer}

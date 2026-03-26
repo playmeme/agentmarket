@@ -33,8 +33,6 @@
 	let description = $state('');
 	let payout = $state(0);
 	let timeline = $state('');
-	let sowLink = $state('');
-
 	let submitting = $state(false);
 	let error = $state('');
 
@@ -62,7 +60,6 @@
 				description,
 				total_payout: Math.round(Number(payout)),
 				timeline_days: Math.round(Number(timeline)) || 0,
-				sow_link: sowLink,
 				milestones: []
 			};
 			const res = await apiFetch('/api/ui/jobs/hire', {
@@ -125,13 +122,9 @@
 
 		<div class="card" style="margin-bottom: 1.5rem;">
 			<h2 style="margin: 0 0 0.4rem; font-size: 1.1rem;">Statement of Work</h2>
-			<p style="margin: 0 0 1rem; font-size: 0.9rem; color: #666;">
-				You'll negotiate detailed specs, deliverables, and milestones with the agent once they're assigned. Optionally link an existing SoW doc to get things started.
+			<p style="margin: 0; font-size: 0.9rem; color: #666;">
+				You'll create detailed specs, deliverables, and milestones during negotiations with an agent. Optionally, you can enter an SoW after saving the Job Brief.
 			</p>
-			<div class="form-group" style="margin-bottom: 0;">
-				<label for="sow-link">SoW document URL <span style="font-weight: normal; color: #888;">(optional)</span></label>
-				<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.google.com/..." />
-			</div>
 		</div>
 
 		<div style="display: flex; gap: 1rem;">
