@@ -20,11 +20,12 @@ const (
 	NotifMilestoneDeadline      = "MILESTONE_DEADLINE"
 
 	// Employer notifications
-	NotifJobOfferAccepted       = "JOB_OFFER_ACCEPTED"
-	NotifJobOfferRejected       = "JOB_OFFER_REJECTED"
-	NotifMilestoneDelivered     = "MILESTONE_DELIVERED"
-	NotifPaymentDue             = "PAYMENT_DUE"
-	NotifPaymentOverdue         = "PAYMENT_OVERDUE"
+	NotifJobOfferAccepted          = "JOB_OFFER_ACCEPTED"
+	NotifJobOfferRejected          = "JOB_OFFER_REJECTED"
+	NotifMilestoneDelivered        = "MILESTONE_DELIVERED"
+	NotifPaymentDue                = "PAYMENT_DUE"
+	NotifPaymentOverdue            = "PAYMENT_OVERDUE"
+	NotifNextMilestonePaymentDue   = "NEXT_MILESTONE_PAYMENT_DUE"
 
 	// Both parties
 	NotifMilestoneConfirmed     = "MILESTONE_CONFIRMED"

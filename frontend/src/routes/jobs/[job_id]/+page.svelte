@@ -82,6 +82,12 @@
 	let error = $state('');
 	let checkoutLoading = $state(false);
 	let checkoutError = $state('');
+	let couponCode = $state('');
+	let couponLoading = $state(false);
+	let couponError = $state('');
+	let couponDiscountCents = $state(0);
+	let couponFinalCents = $state(0);
+	let couponApplied = $state(false);
 	let retractLoading = $state(false);
 	let retractError = $state('');
 	let deleting = $state(false);
@@ -95,6 +101,26 @@
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
+
+	// The milestone currently being paid for: the first PENDING milestone, if any.
+	// When no milestones exist, falls back to null (full SoW price is charged).
+	function getFirstPendingMilestone(j: Job | null): Milestone | null {
+		if (!j?.milestones) return null;
+		return j.milestones.find((m) => m.status === 'PENDING') ?? null;
+	}
+	function getPaymentAmountCents(j: Job | null, m: Milestone | null): number {
+		if (m != null) return m.amount * 100;
+		return j?.sow?.price_cents ?? 0;
+	}
+	function getMilestoneNumber(j: Job | null, m: Milestone | null): number | null {
+		if (m == null || !j?.milestones) return null;
+		const idx = j.milestones.findIndex((ms) => ms.id === m.id);
+		return idx >= 0 ? idx + 1 : null;
+	}
+
+	const currentPaymentMilestone = $derived(getFirstPendingMilestone(job));
+	const currentPaymentAmountCents = $derived(getPaymentAmountCents(job, currentPaymentMilestone));
+	const currentPaymentMilestoneNumber = $derived(getMilestoneNumber(job, currentPaymentMilestone));
 
 	function statusBadgeClass(status: string): string {
 		const map: Record<string, string> = {
@@ -139,19 +165,57 @@
 		await loadJob();
 	});
 
+	async function handleApplyCoupon() {
+		if (!couponCode.trim()) return;
+		couponLoading = true;
+		couponError = '';
+		couponApplied = false;
+		couponDiscountCents = 0;
+		couponFinalCents = 0;
+		try {
+			const amountCents = currentPaymentAmountCents;
+			const res = await apiFetch('/api/ui/coupons/validate', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code: couponCode.trim(), amount_cents: amountCents })
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Invalid coupon code' }));
+				throw new Error(err.error || 'Invalid coupon code');
+			}
+			const data = await res.json();
+			couponDiscountCents = data.discount_cents;
+			couponFinalCents = data.final_amount_cents;
+			couponApplied = true;
+		} catch (e: unknown) {
+			couponError = e instanceof Error ? e.message : 'Failed to validate coupon';
+		} finally {
+			couponLoading = false;
+		}
+	}
+
 	async function handleCheckout() {
 		checkoutLoading = true;
 		checkoutError = '';
 		try {
+			const body: Record<string, string> = {};
+			if (couponApplied && couponCode.trim()) {
+				body.coupon_code = couponCode.trim();
+			}
 			const res = await apiFetch(`/api/ui/jobs/${jobId}/checkout`, {
-				method: 'POST'
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
 			});
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ error: 'Failed to initiate checkout' }));
 				throw new Error(err.error || 'Failed to initiate checkout');
 			}
 			const data = await res.json();
-			if (data.checkout_url) {
+			if (data.paid) {
+				// Coupon covered the full amount — reload job to show IN_PROGRESS.
+				await loadJob();
+			} else if (data.checkout_url) {
 				window.location.href = data.checkout_url;
 			} else {
 				throw new Error('No checkout URL returned');
@@ -325,6 +389,9 @@
 				<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
 					<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">Set up SoW</a>
+					{#if job.status === 'UNASSIGNED'}
+						<a href="/" class="btn btn-secondary" style="white-space: nowrap;">Submit to Agent</a>
+					{/if}
 					<button
 						type="button"
 						class="btn btn-secondary"
@@ -497,22 +564,87 @@
 			</div>
 		{/if}
 
-		<!-- Awaiting payment — Pay Now button (employer only) -->
+		<!-- Awaiting payment — coupon + Pay Now button (employer only) -->
 		{#if job.status === 'AWAITING_PAYMENT' && isEmployer}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #fbbf24; background: #fffbeb;">
-				<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-					<div>
-						<h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Payment Required</h3>
-						<p style="margin: 0; color: #666; font-size: 0.9rem;">Both parties have agreed to the SoW. Complete payment to start the job.</p>
-					</div>
-					<div>
-						{#if checkoutError}
-							<div class="alert alert-error" style="margin-bottom: 0.5rem;">{checkoutError}</div>
+				<h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Payment Required</h3>
+				{#if currentPaymentMilestone && currentPaymentMilestoneNumber !== null}
+					<p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9rem;">
+						Authorize payment for <strong>Milestone {currentPaymentMilestoneNumber} — {currentPaymentMilestone.title}</strong>
+						(<strong>${currentPaymentMilestone.amount.toFixed(2)}</strong>) to start the job.
+						The transaction won't complete until deliverables are approved.
+					</p>
+				{:else}
+					<p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9rem;">
+						Both parties have agreed to the SoW. Complete payment to start the job.
+					</p>
+				{/if}
+
+				<!-- Coupon code input -->
+				<div style="margin-bottom: 1rem;">
+					<label for="coupon-code" style="display: block; font-size: 0.85rem; font-weight: 600; color: #555; margin-bottom: 0.35rem;">
+						Have a coupon code?
+					</label>
+					<div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+						<input
+							id="coupon-code"
+							type="text"
+							bind:value={couponCode}
+							placeholder="Enter coupon code"
+							style="flex: 1; min-width: 160px; max-width: 260px;"
+							disabled={couponApplied || couponLoading}
+						/>
+						{#if couponApplied}
+							<button
+								type="button"
+								class="btn btn-secondary"
+								style="font-size: 0.85rem;"
+								onclick={() => { couponApplied = false; couponCode = ''; couponError = ''; couponDiscountCents = 0; couponFinalCents = 0; }}
+							>
+								Remove
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="btn btn-secondary"
+								style="font-size: 0.85rem;"
+								onclick={handleApplyCoupon}
+								disabled={couponLoading || !couponCode.trim()}
+							>
+								{couponLoading ? 'Checking…' : 'Apply'}
+							</button>
 						{/if}
-						<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
-							{checkoutLoading ? 'Redirecting…' : 'Pay Now'}
-						</button>
 					</div>
+					{#if couponError}
+						<p style="margin: 0.35rem 0 0; font-size: 0.85rem; color: #991b1b;">{couponError}</p>
+					{/if}
+					{#if couponApplied}
+						<div style="margin-top: 0.5rem; font-size: 0.875rem; color: #065f46; background: #d1fae5; border-radius: 6px; padding: 0.4rem 0.75rem; display: inline-block;">
+							Coupon applied — discount: -{(couponDiscountCents / 100).toFixed(2)} USD
+							{#if couponFinalCents <= 0}
+								&nbsp;(full amount covered)
+							{:else}
+								&nbsp;&rarr; you pay {(couponFinalCents / 100).toFixed(2)} USD
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+					{#if checkoutError}
+						<div class="alert alert-error" style="margin: 0; flex: 1;">{checkoutError}</div>
+					{/if}
+					<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
+						{#if checkoutLoading}
+							{couponApplied && couponFinalCents <= 0 ? 'Activating…' : 'Redirecting…'}
+						{:else if couponApplied && couponFinalCents <= 0}
+							Activate (No Charge)
+						{:else if currentPaymentMilestone && currentPaymentMilestoneNumber !== null}
+							Authorize Milestone {currentPaymentMilestoneNumber} (${couponApplied ? (couponFinalCents / 100).toFixed(2) : currentPaymentMilestone.amount.toFixed(2)})
+						{:else}
+							Pay Now
+						{/if}
+					</button>
 				</div>
 			</div>
 		{/if}

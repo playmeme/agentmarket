@@ -531,7 +531,7 @@
 				<div class="milestone-row">
 					<div class="milestone-header">
 						<strong style="font-size: 0.95rem;">Milestone {i + 1}: {milestone.title}</strong>
-						<span style="font-size: 0.9rem; color: #555;">${(milestone.amount / 100).toFixed(2)}</span>
+						<span style="font-size: 0.9rem; color: #555;">${milestone.amount.toFixed(2)}</span>
 					</div>
 					{#if milestone.deliverables}
 						<div style="margin-top: 0.5rem;">

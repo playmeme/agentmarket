@@ -629,7 +629,17 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	log.Info("milestone approved", "job_id", jobID, "milestone_id", milestoneID, "employer_id", employerID)
+	// Mark the approved milestone as PAID (deliverables confirmed, payment is captured).
+	if _, err := app.DB.Exec(
+		`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		milestoneID,
+	); err != nil {
+		log.Error("milestone approval: failed to mark milestone PAID", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("milestone approved and marked PAID", "job_id", jobID, "milestone_id", milestoneID, "employer_id", employerID)
 
 	var m Milestone
 	row := app.DB.QueryRow(
@@ -642,6 +652,43 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
+	}
+
+	// Check if there is a next PENDING milestone.
+	var nextMilestoneID string
+	var nextMilestoneAmount int64
+	var nextMilestoneOrderIndex int
+	nextMilestoneErr := app.DB.QueryRow(
+		`SELECT id, amount, order_index FROM milestones
+		 WHERE sow_id = ? AND status = 'PENDING'
+		 ORDER BY order_index ASC LIMIT 1`,
+		m.SowID,
+	).Scan(&nextMilestoneID, &nextMilestoneAmount, &nextMilestoneOrderIndex)
+
+	if nextMilestoneErr == nil {
+		// There is a next milestone — put job back to AWAITING_PAYMENT.
+		nextMilestoneNumber := nextMilestoneOrderIndex + 1
+		if _, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'AWAITING_PAYMENT', current_milestone_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			jobID,
+		); dbErr != nil {
+			log.Error("milestone approval: failed to set job to AWAITING_PAYMENT for next milestone", "job_id", jobID, "error", dbErr)
+			// Non-fatal: log and continue, job will be stuck in IN_PROGRESS but milestone is PAID.
+		} else {
+			log.Info("milestone approved: job set to AWAITING_PAYMENT for next milestone",
+				"job_id", jobID, "next_milestone_id", nextMilestoneID, "next_milestone_number", nextMilestoneNumber)
+			// Notify the employer that the next milestone payment is due.
+			_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
+				fmt.Sprintf("Milestone %d payment due: %s", nextMilestoneNumber, m.Title+" approved"),
+				fmt.Sprintf("Milestone %d has been approved. Milestone %d ($%d) payment is now due to continue the job.",
+					m.OrderIndex+1, nextMilestoneNumber, nextMilestoneAmount))
+		}
+	} else if nextMilestoneErr == sql.ErrNoRows {
+		// No more milestones — job proceeds normally (stays IN_PROGRESS until delivery).
+		log.Info("milestone approved: all milestones complete or no next milestone", "job_id", jobID)
+	} else {
+		log.Error("milestone approval: failed to check next milestone", "sow_id", m.SowID, "error", nextMilestoneErr)
+		// Non-fatal: proceed.
 	}
 
 	// Notify both parties: employer (confirmation) and agent's manager (milestone completed + payment incoming)

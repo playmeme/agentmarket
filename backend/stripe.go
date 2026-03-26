@@ -16,6 +16,10 @@ import (
 
 // CreateCheckoutHandler creates a Stripe Checkout Session for a job (employer only).
 // POST /api/ui/jobs/{job_id}/checkout
+// Optional body: { "coupon_code": "M1PAID" }
+// If the coupon covers the full amount, Stripe is skipped and the job is moved to
+// IN_PROGRESS directly. If it is a partial discount, Stripe is called with the
+// reduced amount.
 func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "create_checkout")
 
@@ -28,6 +32,13 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	employerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
+
+	// Parse optional body for coupon_code (body may be empty for no-coupon flow).
+	var reqBody struct {
+		CouponCode string `json:"coupon_code"`
+	}
+	// Ignore decode errors — body is optional; an empty/missing body is fine.
+	_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 	// Verify job belongs to employer and is in AWAITING_PAYMENT
 	var jobStatus string
@@ -65,7 +76,120 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine the charge amount: use the first PENDING milestone if milestones exist,
+	// otherwise fall back to the full SoW price.
+	var currentMilestoneID string
+	var currentMilestoneNumber int
+	var baseAmountCents int64
+
+	var firstMilestoneID string
+	var firstMilestoneAmount int64
+	var firstMilestoneOrderIndex int
+	milestoneErr := app.DB.QueryRow(
+		`SELECT id, amount, order_index FROM milestones
+		 WHERE sow_id = ? AND status = 'PENDING'
+		 ORDER BY order_index ASC LIMIT 1`,
+		sow.ID,
+	).Scan(&firstMilestoneID, &firstMilestoneAmount, &firstMilestoneOrderIndex)
+
+	if milestoneErr == nil {
+		// Milestones exist — charge the first PENDING milestone amount (stored in dollars)
+		currentMilestoneID = firstMilestoneID
+		currentMilestoneNumber = firstMilestoneOrderIndex + 1
+		baseAmountCents = firstMilestoneAmount * 100
+	} else if milestoneErr == sql.ErrNoRows {
+		// No milestones — charge the full SoW amount
+		baseAmountCents = int64(sow.PriceCents)
+	} else {
+		log.Error("checkout: db error fetching first milestone", "job_id", jobID, "sow_id", sow.ID, "error", milestoneErr)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	if baseAmountCents <= 0 {
+		writeError(w, http.StatusBadRequest, "charge amount must be greater than zero")
+		return
+	}
+
+	// --- Coupon handling ---
+	chargeAmountCents := baseAmountCents
+	var appliedCoupon *Coupon
+
+	if reqBody.CouponCode != "" {
+		coupon, couponErr := app.validateCoupon(reqBody.CouponCode)
+		if couponErr == sql.ErrNoRows {
+			writeError(w, http.StatusBadRequest, "invalid coupon code")
+			return
+		}
+		if couponErr != nil {
+			log.Error("checkout: coupon db error", "code", reqBody.CouponCode, "error", couponErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if coupon.TimesUsed >= coupon.MaxUses {
+			writeError(w, http.StatusBadRequest, "coupon has already been used")
+			return
+		}
+
+		discountCents, calcErr := calcDiscount(coupon.Value, chargeAmountCents)
+		if calcErr != nil {
+			log.Error("checkout: coupon discount calculation failed", "value", coupon.Value, "error", calcErr)
+			writeError(w, http.StatusInternalServerError, "failed to calculate coupon discount")
+			return
+		}
+
+		chargeAmountCents -= discountCents
+		appliedCoupon = coupon
+		log.Info("checkout: coupon applied", "code", coupon.Code, "discount_cents", discountCents, "final_cents", chargeAmountCents)
+	}
+
+	// If the coupon covers the full amount, skip Stripe entirely.
+	if chargeAmountCents <= 0 {
+		// If paying for a specific milestone, mark it PAID first.
+		if currentMilestoneID != "" {
+			if _, dbErr := app.DB.Exec(
+				`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+				currentMilestoneID,
+			); dbErr != nil {
+				log.Error("checkout: failed to mark milestone PAID after full coupon", "milestone_id", currentMilestoneID, "error", dbErr)
+				writeError(w, http.StatusInternalServerError, "database error")
+				return
+			}
+		}
+		// Mark job as IN_PROGRESS directly.
+		_, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			nullableString(currentMilestoneID), jobID,
+		)
+		if dbErr != nil {
+			log.Error("checkout: failed to update job to IN_PROGRESS after full coupon", "job_id", jobID, "error", dbErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		// Increment coupon usage.
+		if err := app.applyCouponUsage(appliedCoupon.Code); err != nil {
+			log.Error("checkout: failed to increment coupon usage", "code", appliedCoupon.Code, "error", err)
+			// Non-fatal: job is already IN_PROGRESS, log and continue.
+		}
+		log.Info("checkout: full coupon applied, job moved to IN_PROGRESS", "job_id", jobID, "coupon", appliedCoupon.Code, "employer_id", employerID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"paid":    true,
+			"message": "Coupon covered full amount",
+		})
+		return
+	}
+
+	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
+
+	var productName string
+	if currentMilestoneID != "" {
+		productName = fmt.Sprintf("Job %s — Milestone %d", jobID, currentMilestoneNumber)
+	} else {
+		productName = fmt.Sprintf("Job Payment: %s", jobID)
+	}
 
 	params := &stripe.CheckoutSessionParams{
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
@@ -74,9 +198,9 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
 					Currency: stripe.String("usd"),
 					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name: stripe.String(fmt.Sprintf("Job Payment: %s", jobID)),
+						Name: stripe.String(productName),
 					},
-					UnitAmount: stripe.Int64(int64(sow.PriceCents)),
+					UnitAmount: stripe.Int64(chargeAmountCents),
 				},
 				Quantity: stripe.Int64(1),
 			},
@@ -96,10 +220,10 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save checkout session ID to job
+	// Save checkout session ID and current milestone (if any) to job
 	_, err = app.DB.Exec(
-		`UPDATE jobs SET stripe_checkout_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		cs.ID, jobID,
+		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		cs.ID, nullableString(currentMilestoneID), jobID,
 	)
 	if err != nil {
 		log.Error("checkout: failed to save session id", "job_id", jobID, "session_id", cs.ID, "error", err)
@@ -107,7 +231,16 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID)
+	// If a partial coupon was applied, record the usage now that the Stripe
+	// session exists (the session becoming "completed" will move the job).
+	if appliedCoupon != nil {
+		if err := app.applyCouponUsage(appliedCoupon.Code); err != nil {
+			log.Error("checkout: failed to increment partial coupon usage", "code", appliedCoupon.Code, "error", err)
+			// Non-fatal.
+		}
+	}
+
+	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID, "charge_cents", chargeAmountCents)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
