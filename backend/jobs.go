@@ -552,6 +552,8 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "list_jobs")
+
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
 
@@ -581,6 +583,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		log.Error("list jobs: unknown database error", "user_id", userID, "role", role, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -590,6 +593,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		j, err := app.scanJobWithName(rows)
 		if err != nil {
+			log.Error("list jobs: scan error", "user_id", userID, "role", role, "error", err)
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
