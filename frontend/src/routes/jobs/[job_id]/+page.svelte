@@ -268,6 +268,7 @@
 			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
 				<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
+					<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">Set up SoW</a>
 					<button
 						type="button"
 						class="btn btn-secondary"

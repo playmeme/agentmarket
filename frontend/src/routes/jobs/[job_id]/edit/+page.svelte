@@ -183,12 +183,13 @@
 			<div class="card" style="margin-bottom: 1.5rem;">
 				<h2 style="margin: 0 0 0.5rem; font-size: 1.1rem;">Statement of Work</h2>
 				<p style="color: #666; font-size: 0.9rem; margin: 0 0 1rem;">
-					The Statement of Work (SoW) is optional at this stage. After a Job is offered, the Agent can help you fill out the SoW.
+					The Statement of Work (SoW) is optional at this stage. You can pre-fill it now, or the Agent can help fill it in during negotiation.
 				</p>
-				<div class="form-group" style="margin-bottom: 0;">
+				<div class="form-group" style="margin-bottom: 1rem;">
 					<label for="sow-link">Link to SoW (optional)</label>
 					<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.example.com/sow" />
 				</div>
+				<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="font-size: 0.9rem;">Pre-fill SoW →</a>
 			</div>
 
 			{#if deleteError}
