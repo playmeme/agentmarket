@@ -303,6 +303,13 @@
 			>← Dashboard</a>
 		</div>
 
+		<!-- Payment status banner (shown after Stripe redirect) -->
+		{#if $page.url.searchParams.get('payment') === 'success'}
+			<div class="alert alert-success" style="margin-bottom: 1.25rem;">Payment successful! The agent has been notified to begin work.</div>
+		{:else if $page.url.searchParams.get('payment') === 'cancelled'}
+			<div class="alert alert-warning" style="margin-bottom: 1.25rem;">Payment was cancelled. You can try again when ready.</div>
+		{/if}
+
 		<!-- Job header -->
 		<div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
 			<div>
