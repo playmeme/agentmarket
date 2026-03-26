@@ -82,6 +82,19 @@ func (app *App) isJobParticipant(jobID, userID string) (bool, error) {
 	return count > 0, nil
 }
 
+// isJobEmployer returns true if userID is the employer who owns the job.
+func (app *App) isJobEmployer(jobID, userID string) (bool, error) {
+	var count int
+	err := app.DB.QueryRow(
+		`SELECT COUNT(*) FROM jobs WHERE id = ? AND employer_id = ?`,
+		jobID, userID,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // --- Handlers ---
 
 func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +103,7 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	// Verify job exists and is in SOW_NEGOTIATION
+	// Verify job exists and is in an editable status
 	var jobStatus string
 	err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&jobStatus)
 	if err == sql.ErrNoRows {
@@ -102,21 +115,39 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
-	if jobStatus != "SOW_NEGOTIATION" {
-		writeError(w, http.StatusBadRequest, "job must be in SOW_NEGOTIATION status to edit SOW")
+
+	// SOW_NEGOTIATION: both employer and agent can edit.
+	// UNASSIGNED / PENDING_ACCEPTANCE: employer-only pre-fill before agent is assigned.
+	employerOnlyStatuses := jobStatus == "UNASSIGNED" || jobStatus == "PENDING_ACCEPTANCE"
+	if jobStatus != "SOW_NEGOTIATION" && !employerOnlyStatuses {
+		writeError(w, http.StatusBadRequest, "job must be in SOW_NEGOTIATION, UNASSIGNED, or PENDING_ACCEPTANCE status to edit SOW")
 		return
 	}
 
-	// Verify caller is a participant
-	ok, err := app.isJobParticipant(jobID, userID)
-	if err != nil {
-		log.Error("sow upsert: db error checking participant", "job_id", jobID, "user_id", userID, "error", err)
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	if !ok {
-		writeError(w, http.StatusForbidden, "not authorized to edit this SOW")
-		return
+	// Verify caller is authorized
+	if employerOnlyStatuses {
+		// Only employer may pre-fill SoW before an agent is assigned
+		ok, err := app.isJobEmployer(jobID, userID)
+		if err != nil {
+			log.Error("sow upsert: db error checking employer", "job_id", jobID, "user_id", userID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusForbidden, "not authorized to edit this SOW")
+			return
+		}
+	} else {
+		ok, err := app.isJobParticipant(jobID, userID)
+		if err != nil {
+			log.Error("sow upsert: db error checking participant", "job_id", jobID, "user_id", userID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusForbidden, "not authorized to edit this SOW")
+			return
+		}
 	}
 
 	var req SOWRequest
@@ -226,7 +257,8 @@ func (app *App) GetSOW(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	// Verify caller is a participant
+	// Verify caller is a participant (employer or agent handler).
+	// isJobParticipant uses LEFT JOIN so employer can access even without an agent.
 	ok, err := app.isJobParticipant(jobID, userID)
 	if err != nil {
 		log.Error("get sow: db error checking participant", "job_id", jobID, "error", err)
