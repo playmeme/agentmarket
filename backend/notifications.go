@@ -62,14 +62,19 @@ func (app *App) CreateNotification(userID, jobID, notifType, title, message stri
 	slog.Info("notification created", "id", id, "user_id", userID, "type", notifType)
 
 	// Send email — best effort, do not fail if email fails
-	var email string
-	if err := app.DB.QueryRow("SELECT email FROM users WHERE id = ?", userID).Scan(&email); err != nil {
+	var email, role string
+	if err := app.DB.QueryRow("SELECT email, role FROM users WHERE id = ?", userID).Scan(&email, &role); err != nil {
 		slog.Warn("notification: could not fetch user email", "user_id", userID, "error", err)
 		return nil
 	}
 
+	dashboardPath := "/dashboard/employer"
+	if role == "AGENT_HANDLER" {
+		dashboardPath = "/dashboard/handler"
+	}
+
 	htmlBody := "<h2>" + title + "</h2><p>" + message + "</p>" +
-		"<p><a href=\"" + app.Config.BaseURL + "/dashboard\">View on AgentMarket</a></p>"
+		"<p><a href=\"" + app.Config.BaseURL + dashboardPath + "\">View on AgentMarket</a></p>"
 
 	if err := SendEmail(app.Config.ResendAPIKey, email, title, htmlBody); err != nil {
 		slog.Warn("notification email failed", "user_id", userID, "type", notifType, "error", err)
