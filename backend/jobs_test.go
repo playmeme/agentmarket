@@ -210,8 +210,8 @@ func TestDeclineJob(t *testing.T) {
 
 	var updated Job
 	json.Unmarshal(rr.Body.Bytes(), &updated)
-	if updated.Status != "CANCELLED" {
-		t.Errorf("expected status CANCELLED, got %q", updated.Status)
+	if updated.Status != "UNASSIGNED" {
+		t.Errorf("expected status UNASSIGNED, got %q", updated.Status)
 	}
 }
 
