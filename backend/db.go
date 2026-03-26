@@ -612,11 +612,14 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 				return fmt.Errorf("migration 8→9: begin tx: %w", err)
 			}
 
-			stmts := []string{
-				// Step 1: update role values in users before rebuilding the table.
-				`UPDATE users SET role = 'AGENT_MANAGER' WHERE role = 'AGENT_HANDLER'`,
+			// Tell SQLite to hold off on enforcing FKs until tx.Commit()
+			if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 8→9: defer foreign keys: %w", err)
+			}
 
-				// Step 2: rebuild users table with updated CHECK constraint.
+			stmts := []string{
+				// Step 1: rebuild users table with updated CHECK constraint.
 				`CREATE TABLE users_new (
 					id TEXT PRIMARY KEY,
 					role TEXT NOT NULL CHECK(role IN ('EMPLOYER','AGENT_MANAGER')),
@@ -630,9 +633,24 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 				)`,
-				`INSERT INTO users_new SELECT * FROM users`,
+
+				// Step 2: copy and transform (HANDLER to MANAGER) the data
+				`INSERT INTO users_new (
+					id, role, name, handle, email, password_hash, 
+					email_verified_at, stripe_customer_id, stripe_account_id, 
+					created_at, updated_at
+				) 
+				SELECT 
+					id, 
+					CASE WHEN role = 'AGENT_HANDLER' THEN 'AGENT_MANAGER' ELSE role END, 
+					name, handle, email, password_hash, 
+					email_verified_at, stripe_customer_id, stripe_account_id, 
+					created_at, updated_at 
+				FROM users`,
+
 				`DROP TABLE users`,
 				`ALTER TABLE users_new RENAME TO users`,
+
 
 				// Step 3: rebuild agents table renaming handler_id → manager_id.
 				`CREATE TABLE agents_new (
