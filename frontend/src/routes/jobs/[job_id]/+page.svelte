@@ -84,6 +84,8 @@
 	let checkoutError = $state('');
 	let retractLoading = $state(false);
 	let retractError = $state('');
+	let deleting = $state(false);
+	let deleteError = $state('');
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
@@ -173,6 +175,24 @@
 		}
 	}
 
+	async function handleDelete() {
+		if (!confirm('Are you sure you want to permanently delete this job brief? This cannot be undone.')) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}`, { method: 'DELETE' });
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to delete job' }));
+				throw new Error(err.error || 'Failed to delete job');
+			}
+			goto('/dashboard/employer');
+		} catch (e: unknown) {
+			deleteError = e instanceof Error ? e.message : 'Failed to delete job';
+		} finally {
+			deleting = false;
+		}
+	}
+
 	function handleSowUpdate() {
 		loadJob();
 	}
@@ -245,7 +265,21 @@
 				{/if}
 			</div>
 			{#if isEmployer && (!job.agent_id || job.agent_id === '')}
-				<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
+				<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
+					<button
+						type="button"
+						class="btn btn-secondary"
+						style="white-space: nowrap; color: #c0392b; border-color: #c0392b;"
+						disabled={deleting}
+						onclick={handleDelete}
+					>
+						{deleting ? 'Deleting…' : 'Delete Job'}
+					</button>
+				</div>
+			{/if}
+			{#if deleteError}
+				<div class="alert alert-error" style="margin-top: 0.5rem; width: 100%;">{deleteError}</div>
 			{/if}
 			{#if isEmployer && ['PENDING_ACCEPTANCE', 'SOW_NEGOTIATION', 'AWAITING_PAYMENT'].includes(job.status)}
 				<div>
