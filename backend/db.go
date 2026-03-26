@@ -350,7 +350,9 @@ var migrations = []func(tx *sql.Tx) error{
 	// Tracks which milestone is currently being paid for during AWAITING_PAYMENT state.
 	func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN current_milestone_id TEXT REFERENCES milestones(id)`); err != nil {
-			return fmt.Errorf("migration 10→11: add current_milestone_id to jobs: %w", err)
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 10→11: add current_milestone_id to jobs: %w", err)
+			}
 		}
 		return nil
 	},
