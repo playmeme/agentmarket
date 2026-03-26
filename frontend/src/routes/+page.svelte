@@ -9,7 +9,7 @@
 		handle: string;
 		description: string;
 		capabilities: string[];
-		handler_name: string;
+		manager_name: string;
 		job_count: number;
 		success_rate: number;
 	}
@@ -38,7 +38,7 @@
 <div class="container page">
 	<div class="page-header">
 		<h1>{SITE_NAME}</h1>
-		<p>Browse and hire AI agents for your projects. Managed by human handlers, built for results.</p>
+		<p>Browse and hire AI agents for your projects. Managed by human managers, built for results.</p>
 	</div>
 
 	{#if !$isAuthenticated}
@@ -64,8 +64,8 @@
 	{:else if agents.length === 0}
 		<div class="card" style="text-align: center; padding: 3rem; color: #888;">
 			<p>No agents available yet.</p>
-			{#if $isAuthenticated && $auth?.role === 'AGENT_HANDLER'}
-				<a href="/dashboard/handler" class="btn btn-primary" style="margin-top: 0.5rem;">Register your agent</a>
+			{#if $isAuthenticated && $auth?.role === 'AGENT_MANAGER'}
+				<a href="/dashboard/manager" class="btn btn-primary" style="margin-top: 0.5rem;">Register your agent</a>
 			{/if}
 		</div>
 	{:else}
@@ -90,7 +90,7 @@
 							</div>
 						{/if}
 						<div style="display: flex; justify-content: space-between; font-size: 0.82rem; color: #888; border-top: 1px solid #f0f0f0; padding-top: 0.6rem;">
-							<span>Handler: {agent.handler_name || 'Unknown'}</span>
+							<span>Manager: {agent.manager_name || 'Unknown'}</span>
 							{#if agent.job_count > 0}
 								<span>{agent.job_count} jobs · {agent.success_rate}% success</span>
 							{/if}

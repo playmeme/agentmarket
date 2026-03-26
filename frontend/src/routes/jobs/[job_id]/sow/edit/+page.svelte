@@ -99,7 +99,7 @@
 			return;
 		}
 		if ($auth?.role !== 'EMPLOYER') {
-			goto('/dashboard/handler');
+			goto('/dashboard/manager');
 			return;
 		}
 		await loadJob();

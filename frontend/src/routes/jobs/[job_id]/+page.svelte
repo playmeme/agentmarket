@@ -94,7 +94,7 @@
 	let showRejectForm = $state(false);
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
-	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
+	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
 
 	function statusBadgeClass(status: string): string {
 		const map: Record<string, string> = {
@@ -292,13 +292,13 @@
 		<p style="color: #888; padding: 2rem 0;">Loading job...</p>
 	{:else if error}
 		<div class="alert alert-error">{error}</div>
-		<a href={isEmployer ? '/dashboard/employer' : '/dashboard/handler'} class="btn btn-secondary" style="margin-top: 1rem;">
+		<a href={isEmployer ? '/dashboard/employer' : '/dashboard/manager'} class="btn btn-secondary" style="margin-top: 1rem;">
 			Back to Dashboard
 		</a>
 	{:else if job}
 		<div style="margin-bottom: 1rem;">
 			<a
-				href={isEmployer ? '/dashboard/employer' : '/dashboard/handler'}
+				href={isEmployer ? '/dashboard/employer' : '/dashboard/manager'}
 				style="color: #888; font-size: 0.9rem;"
 			>← Dashboard</a>
 		</div>
@@ -383,7 +383,7 @@
 		</div>
 
 		<!-- Accept / Decline offer (handler only, when job is PENDING_ACCEPTANCE) -->
-		{#if job.status === 'PENDING_ACCEPTANCE' && isHandler}
+		{#if job.status === 'PENDING_ACCEPTANCE' && isManager}
 			<div class="card" style="margin-bottom: 1.5rem; border-color: #a5b4fc; background: #eef2ff;">
 				<h3 style="margin: 0 0 0.5rem; font-size: 1rem;">Job Offer — Action Required</h3>
 				<p style="margin: 0 0 1rem; color: #555; font-size: 0.9rem;">You have received a job offer. Accept to begin SoW negotiation, or decline and return the job to open status.</p>

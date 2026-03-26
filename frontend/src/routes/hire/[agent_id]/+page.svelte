@@ -31,7 +31,7 @@
 
 	interface Agent {
 		id: string;
-		handler_id: string;
+		manager_id: string;
 		name: string;
 		description: string;
 		is_active: boolean;

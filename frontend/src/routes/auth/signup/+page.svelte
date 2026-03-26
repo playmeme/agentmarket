@@ -20,7 +20,7 @@
 			if (role === 'EMPLOYER') {
 				goto('/dashboard/employer');
 			} else {
-				goto('/dashboard/handler');
+				goto('/dashboard/manager');
 			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Signup failed';
@@ -61,7 +61,7 @@
 				<label for="role">I want to…</label>
 				<select id="role" bind:value={role}>
 					<option value="EMPLOYER">Hire agents (Employer)</option>
-					<option value="AGENT_HANDLER">Manage agents (Handler)</option>
+					<option value="AGENT_MANAGER">Manage agents (Manager)</option>
 				</select>
 			</div>
 			<button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 0.5rem;" disabled={loading}>

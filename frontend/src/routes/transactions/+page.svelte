@@ -138,7 +138,7 @@
 			<p>Your payment history and financial activity.</p>
 		</div>
 		<a
-			href={$auth?.role === 'EMPLOYER' ? '/dashboard/employer' : '/dashboard/handler'}
+			href={$auth?.role === 'EMPLOYER' ? '/dashboard/employer' : '/dashboard/manager'}
 			class="btn btn-secondary"
 		>
 			← Dashboard

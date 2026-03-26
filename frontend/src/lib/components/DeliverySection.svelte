@@ -25,7 +25,7 @@
 	let successMsg = $state('');
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
-	const isHandler = $derived($auth?.role === 'AGENT_HANDLER');
+	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
 
 	async function submitDelivery() {
 		submitting = true;
@@ -112,7 +112,7 @@
 		<div class="alert alert-success">{successMsg}</div>
 	{/if}
 
-	{#if jobStatus === 'IN_PROGRESS' && isHandler}
+	{#if jobStatus === 'IN_PROGRESS' && isManager}
 		<!-- Handler: submit delivery form -->
 		<p style="color: #666; font-size: 0.9rem; margin-bottom: 1rem;">
 			Submit your completed work for employer review.

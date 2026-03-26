@@ -150,8 +150,8 @@ func (app *App) SignupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Role != "EMPLOYER" && req.Role != "AGENT_HANDLER" {
-		writeError(w, http.StatusBadRequest, "role must be EMPLOYER or AGENT_HANDLER")
+	if req.Role != "EMPLOYER" && req.Role != "AGENT_MANAGER" {
+		writeError(w, http.StatusBadRequest, "role must be EMPLOYER or AGENT_MANAGER")
 		return
 	}
 

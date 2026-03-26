@@ -52,8 +52,8 @@
 						<span class="notif-badge" aria-label="{unreadCount} unread notifications"></span>
 					{/if}
 				</a>
-			{:else if $auth?.role === 'AGENT_HANDLER'}
-				<a href="/dashboard/handler" class="nav-dashboard-link">
+			{:else if $auth?.role === 'AGENT_MANAGER'}
+				<a href="/dashboard/manager" class="nav-dashboard-link">
 					Dashboard
 					{#if unreadCount > 0}
 						<span class="notif-badge" aria-label="{unreadCount} unread notifications"></span>

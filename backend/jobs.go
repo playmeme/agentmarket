@@ -290,11 +290,11 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 		"total_payout", req.TotalPayout,
 	)
 
-	// Notify the agent's handler when a job offer is created with an agent assigned
+	// Notify the agent's manager when a job offer is created with an agent assigned
 	if req.AgentID != "" {
-		var handlerID string
-		if err := app.DB.QueryRow("SELECT handler_id FROM agents WHERE id = ?", req.AgentID).Scan(&handlerID); err == nil {
-			_ = app.CreateNotification(handlerID, jobID, NotifJobOffer,
+		var managerID string
+		if err := app.DB.QueryRow("SELECT manager_id FROM agents WHERE id = ?", req.AgentID).Scan(&managerID); err == nil {
+			_ = app.CreateNotification(managerID, jobID, NotifJobOffer,
 				"New job offer: "+req.Title,
 				"You have received a new job offer. Review it on your dashboard.")
 		}
@@ -471,12 +471,12 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("agent assigned to job", "job_id", jobID, "employer_id", employerID, "agent_id", req.AgentID)
 
-	// Notify agent's handler of job offer
-	var handlerID string
-	if err := app.DB.QueryRow("SELECT handler_id FROM agents WHERE id = ?", req.AgentID).Scan(&handlerID); err == nil {
+	// Notify agent's manager of job offer
+	var managerID string
+	if err := app.DB.QueryRow("SELECT manager_id FROM agents WHERE id = ?", req.AgentID).Scan(&managerID); err == nil {
 		var jobTitle string
 		_ = app.DB.QueryRow("SELECT title FROM jobs WHERE id = ?", jobID).Scan(&jobTitle)
-		_ = app.CreateNotification(handlerID, jobID, NotifJobOffer,
+		_ = app.CreateNotification(managerID, jobID, NotifJobOffer,
 			"New job offer: "+jobTitle,
 			"You have received a new job offer. Review it on your dashboard.")
 	}
@@ -510,12 +510,12 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 			userID,
 		)
 	} else {
-		// AGENT_HANDLER: list jobs for any of their agents
+		// AGENT_MANAGER: list jobs for any of their agents
 		rows, err = app.DB.Query(
 			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
-			 WHERE a.handler_id = ?
+			 WHERE a.manager_id = ?
 			 ORDER BY j.created_at DESC`,
 			userID,
 		)
@@ -644,16 +644,16 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Notify both parties: employer (confirmation) and agent's handler (milestone completed + payment incoming)
+	// Notify both parties: employer (confirmation) and agent's manager (milestone completed + payment incoming)
 	_ = app.CreateNotification(employerID, jobID, NotifMilestoneConfirmed,
 		"Milestone approved: "+m.Title,
 		"You approved a milestone. Payment will be processed.")
 
-	var agentHandlerID string
+	var agentManagerID string
 	if err := app.DB.QueryRow(
-		`SELECT a.handler_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
-	).Scan(&agentHandlerID); err == nil {
-		_ = app.CreateNotification(agentHandlerID, jobID, NotifMilestoneCompleted,
+		`SELECT a.manager_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
+	).Scan(&agentManagerID); err == nil {
+		_ = app.CreateNotification(agentManagerID, jobID, NotifMilestoneCompleted,
 			"Milestone approved: "+m.Title,
 			"The employer has approved your milestone. Payment is on its way.")
 	}
@@ -1014,15 +1014,15 @@ func (app *App) ApproveDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Notify agent's handler of payment received and job completion
-	var agentHandlerID string
+	// Notify agent's manager of payment received and job completion
+	var agentManagerID string
 	if err := app.DB.QueryRow(
-		`SELECT a.handler_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
-	).Scan(&agentHandlerID); err == nil {
-		_ = app.CreateNotification(agentHandlerID, jobID, NotifPaymentReceived,
+		`SELECT a.manager_id FROM jobs j JOIN agents a ON j.agent_id = a.id WHERE j.id = ?`, jobID,
+	).Scan(&agentManagerID); err == nil {
+		_ = app.CreateNotification(agentManagerID, jobID, NotifPaymentReceived,
 			"Payment received: "+j.Title,
 			"The employer has approved delivery and payment has been captured. Job is complete.")
-		_ = app.CreateNotification(agentHandlerID, jobID, NotifMilestoneConfirmed,
+		_ = app.CreateNotification(agentManagerID, jobID, NotifMilestoneConfirmed,
 			"Job complete: "+j.Title,
 			"The job has been marked as completed.")
 	}
@@ -1113,23 +1113,23 @@ func (app *App) RequestRevisionHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-// UIAcceptJobHandler allows an AGENT_HANDLER to accept a job offer via the UI (JWT auth).
+// UIAcceptJobHandler allows an AGENT_MANAGER to accept a job offer via the UI (JWT auth).
 // This mirrors AcceptJobHandler (which uses API key auth) but is called from the web frontend.
 // POST /api/ui/jobs/{id}/accept
 func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_accept_job")
 
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
-	if role != "AGENT_HANDLER" {
-		log.Warn("authz failure: accept job requires AGENT_HANDLER role", "role", role)
-		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can accept job offers")
+	if role != "AGENT_MANAGER" {
+		log.Warn("authz failure: accept job requires AGENT_MANAGER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_MANAGER role can accept job offers")
 		return
 	}
 
-	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+	managerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "id")
 
-	// Load job — verify it belongs to one of this handler's agents and is awaiting acceptance.
+	// Load job — verify it belongs to one of this manager's agents and is awaiting acceptance.
 	var totalPayout int64
 	var timelineDays int
 	var agentID string
@@ -1137,15 +1137,15 @@ func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		`SELECT j.total_payout, j.timeline_days, j.agent_id
 		   FROM jobs j
 		   JOIN agents a ON j.agent_id = a.id
-		  WHERE j.id = ? AND a.handler_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
-		jobID, handlerID,
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		jobID, managerID,
 	).Scan(&totalPayout, &timelineDays, &agentID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
 		return
 	}
 	if err != nil {
-		log.Error("ui accept job: db error", "job_id", jobID, "handler_id", handlerID, "error", err)
+		log.Error("ui accept job: db error", "job_id", jobID, "manager_id", managerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -1192,7 +1192,7 @@ func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Info("job accepted via UI, moved to SOW_NEGOTIATION", "job_id", jobID, "handler_id", handlerID)
+	log.Info("job accepted via UI, moved to SOW_NEGOTIATION", "job_id", jobID, "manager_id", managerID)
 
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
@@ -1209,20 +1209,20 @@ func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
-// UIRejectJobHandler allows an AGENT_HANDLER to reject a job offer via the UI (JWT auth).
+// UIRejectJobHandler allows an AGENT_MANAGER to reject a job offer via the UI (JWT auth).
 // The job is reset to UNASSIGNED (agent cleared) and the employer is notified with the reason.
 // POST /api/ui/jobs/{id}/reject
 func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_reject_job")
 
 	role, _ := r.Context().Value(contextKeyUserRole).(string)
-	if role != "AGENT_HANDLER" {
-		log.Warn("authz failure: reject job requires AGENT_HANDLER role", "role", role)
-		writeError(w, http.StatusForbidden, "only AGENT_HANDLER role can reject job offers")
+	if role != "AGENT_MANAGER" {
+		log.Warn("authz failure: reject job requires AGENT_MANAGER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_MANAGER role can reject job offers")
 		return
 	}
 
-	handlerID, _ := r.Context().Value(contextKeyUserID).(string)
+	managerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "id")
 
 	var req struct {
@@ -1237,21 +1237,21 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the job belongs to one of this handler's agents and is awaiting acceptance.
+	// Verify the job belongs to one of this manager's agents and is awaiting acceptance.
 	var agentID string
 	err := app.DB.QueryRow(
 		`SELECT j.agent_id
 		   FROM jobs j
 		   JOIN agents a ON j.agent_id = a.id
-		  WHERE j.id = ? AND a.handler_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
-		jobID, handlerID,
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		jobID, managerID,
 	).Scan(&agentID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
 		return
 	}
 	if err != nil {
-		log.Error("ui reject job: db error", "job_id", jobID, "handler_id", handlerID, "error", err)
+		log.Error("ui reject job: db error", "job_id", jobID, "manager_id", managerID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -1273,7 +1273,7 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Info("job rejected via UI, reset to UNASSIGNED", "job_id", jobID, "handler_id", handlerID)
+	log.Info("job rejected via UI, reset to UNASSIGNED", "job_id", jobID, "manager_id", managerID)
 
 	j, err := app.getJobDetail(jobID)
 	if err != nil {
@@ -1452,7 +1452,7 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.created_at, j.updated_at
 		          FROM jobs j JOIN agents a ON j.agent_id = a.id
-		          WHERE a.handler_id = ? ORDER BY j.created_at DESC`
+		          WHERE a.manager_id = ? ORDER BY j.created_at DESC`
 	}
 
 	rows, err := app.DB.Query(query, userID)
