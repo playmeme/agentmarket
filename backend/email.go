@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 type resendEmailRequest struct {
@@ -16,9 +17,16 @@ type resendEmailRequest struct {
 }
 
 // SendEmail sends an email via the Resend API.
+// If apiKey starts with "test-", the call is a no-op so that unit tests never
+// hit the real Resend API (which would return 401 for fake keys).
 func SendEmail(apiKey, to, subject, htmlBody string) error {
 	if apiKey == "" {
 		return fmt.Errorf("RESEND_API_KEY not configured")
+	}
+
+	if strings.HasPrefix(apiKey, "test-") {
+		slog.Info("email skipped (test mode)", "to", to, "subject", subject)
+		return nil
 	}
 
 	slog.Info("sending email", "to", to, "subject", subject)

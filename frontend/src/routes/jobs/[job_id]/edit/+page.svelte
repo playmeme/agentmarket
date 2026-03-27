@@ -39,6 +39,8 @@
 	let timeline = $state('');
 	let sowLink = $state('');
 
+	let hasSow = $state(false);
+
 	let loading = $state(true);
 	let submitting = $state(false);
 	let error = $state('');
@@ -78,6 +80,7 @@
 			payout = job.total_payout ?? 0;
 			timeline = job.timeline_days ? String(job.timeline_days) : '';
 			sowLink = job.sow_link ?? '';
+			hasSow = !!job.sow;
 		} catch (e: unknown) {
 			loadError = e instanceof Error ? e.message : 'Failed to load job';
 		} finally {
@@ -189,7 +192,7 @@
 					<label for="sow-link">Link to SoW (optional)</label>
 					<input id="sow-link" type="url" bind:value={sowLink} placeholder="https://docs.example.com/sow" />
 				</div>
-				<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="font-size: 0.9rem;">Pre-fill SoW →</a>
+				<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="font-size: 0.9rem;">{hasSow ? 'Edit SoW →' : 'Pre-fill SoW →'}</a>
 			</div>
 
 			{#if deleteError}

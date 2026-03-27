@@ -839,7 +839,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		 WHERE id = ? AND agent_id = ? AND status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION')`,
 		jobID, agentID,
 	)
 	if err != nil {
@@ -850,7 +850,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in a declinable status")
 		return
 	}
 
