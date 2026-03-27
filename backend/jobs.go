@@ -1291,17 +1291,20 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the job belongs to one of this manager's agents and is awaiting acceptance.
+	// Verify the job belongs to one of this manager's agents and is in a declinable status.
+	// Decline is permitted during PENDING_ACCEPTANCE (offer not yet accepted) and
+	// SOW_NEGOTIATION (negotiation in progress), matching the UI which shows the decline
+	// action in both states.
 	var agentID string
 	err := app.DB.QueryRow(
 		`SELECT j.agent_id
 		   FROM jobs j
 		   JOIN agents a ON j.agent_id = a.id
-		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION')`,
 		jobID, managerID,
 	).Scan(&agentID)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE or SOW_NEGOTIATION status")
 		return
 	}
 	if err != nil {
@@ -1313,7 +1316,7 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	// Reset the job to UNASSIGNED, clearing the agent assignment.
 	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
-		  WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		  WHERE id = ? AND agent_id = ? AND status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION')`,
 		jobID, agentID,
 	)
 	if err != nil {
@@ -1323,7 +1326,7 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE or SOW_NEGOTIATION status")
 		return
 	}
 
