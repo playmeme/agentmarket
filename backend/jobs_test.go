@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+
 // setupJobFixtures creates a verified employer, an agent handler, an agent, and returns them.
 func setupJobFixtures(t *testing.T, app *App) (employerID, managerID, agentID, agentAPIKey string) {
 	t.Helper()
@@ -457,4 +458,133 @@ func TestRetractOfferFinalContract(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Errorf("final contract retract: expected 409, got %d: %s", rr.Code, rr.Body.String())
 	}
+}
+
+// TestMilestoneLevelCapture verifies the per-milestone Stripe capture behaviour
+// introduced to fix the multi-milestone payment intent bug (issue #116).
+//
+// It tests two sub-cases:
+//
+//  1. When a milestone has a non-empty stripe_payment_intent, ApproveMilestoneHandler
+//     attempts to capture it. With no real Stripe key configured the capture call
+//     returns an error and the handler returns HTTP 500 — confirming the capture
+//     attempt is made and is not silently skipped.
+//
+//  2. When a milestone has no stripe_payment_intent (e.g. paid via coupon or not
+//     yet set by the webhook), ApproveMilestoneHandler succeeds (HTTP 200) and
+//     marks the milestone PAID without crashing.
+func TestMilestoneLevelCapture(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// --- Sub-case 1: milestone has a stripe_payment_intent —
+	// ApproveMilestoneHandler should attempt capture and return 500 (no Stripe key).
+	t.Run("attempts capture when intent present", func(t *testing.T) {
+		jobID, m1ID, _ := setupSowWithMilestones(t, app, router, employerID, managerID, agentID, agentAPIKey)
+
+		// Simulate the Stripe webhook: set job IN_PROGRESS and store a fake
+		// payment intent on milestone 1.
+		fakeIntentID := "pi_test_milestone_capture_123"
+		if _, err := app.DB.Exec(
+			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobID,
+		); err != nil {
+			t.Fatalf("set job IN_PROGRESS: %v", err)
+		}
+		if _, err := app.DB.Exec(
+			`UPDATE milestones SET stripe_payment_intent = ? WHERE id = ?`, fakeIntentID, m1ID,
+		); err != nil {
+			t.Fatalf("set milestone intent: %v", err)
+		}
+
+		// Agent submits proof of work to move milestone 1 → REVIEW_REQUESTED.
+		submitBody := SubmitProofRequest{ProofOfWorkURL: "https://example.com/proof1", ProofOfWorkNotes: "Done"}
+		rr := doRequest(t, router, http.MethodPost,
+			"/api/v1/jobs/"+jobID+"/milestones/"+m1ID+"/submit", submitBody, agentAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("submit proof: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		// Approve milestone 1. Because no real Stripe key is configured, the
+		// capture call will fail — we expect a 500 response. This confirms that
+		// ApproveMilestoneHandler actually attempted the capture (it did not
+		// skip it when the intent was present).
+		rr = doRequest(t, router, http.MethodPost,
+			"/api/ui/jobs/"+jobID+"/milestones/"+m1ID+"/approve", nil, employerTok)
+		if rr.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500 (Stripe capture attempted, no key configured), got %d: %s",
+				rr.Code, rr.Body.String())
+		}
+
+		// The milestone must NOT have been marked PAID (capture failed, so the
+		// DB transaction was never committed).
+		var status string
+		if err := app.DB.QueryRow(`SELECT status FROM milestones WHERE id = ?`, m1ID).Scan(&status); err != nil {
+			t.Fatalf("query milestone status: %v", err)
+		}
+		if status == "PAID" {
+			t.Error("milestone should not be PAID after failed Stripe capture")
+		}
+	})
+
+	// --- Sub-case 2: milestone has NO stripe_payment_intent —
+	// ApproveMilestoneHandler should skip capture and succeed (HTTP 200).
+	t.Run("succeeds without intent (no capture needed)", func(t *testing.T) {
+		// Build a fresh employer/agent setup so this sub-test is independent.
+		emp2ID, mgr2ID, ag2ID, ag2APIKey := setupJobFixtures(t, app)
+		emp2Tok := makeAuthToken(t, app, emp2ID, "EMPLOYER")
+
+		jobID, m1ID, _ := setupSowWithMilestones(t, app, router, emp2ID, mgr2ID, ag2ID, ag2APIKey)
+
+		// Simulate the webhook completing without storing an intent on the milestone
+		// (e.g. coupon path, or webhook ran before the fix).
+		if _, err := app.DB.Exec(
+			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobID,
+		); err != nil {
+			t.Fatalf("set job IN_PROGRESS: %v", err)
+		}
+		// Explicitly ensure stripe_payment_intent is empty (it is by default, but be explicit).
+		if _, err := app.DB.Exec(
+			`UPDATE milestones SET stripe_payment_intent = '' WHERE id = ?`, m1ID,
+		); err != nil {
+			t.Fatalf("clear milestone intent: %v", err)
+		}
+
+		// Agent submits proof → REVIEW_REQUESTED.
+		submitBody := SubmitProofRequest{ProofOfWorkURL: "https://example.com/proof2", ProofOfWorkNotes: "Done"}
+		rr := doRequest(t, router, http.MethodPost,
+			"/api/v1/jobs/"+jobID+"/milestones/"+m1ID+"/submit", submitBody, ag2APIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("submit proof: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		// Approve milestone 1 — no Stripe intent, so capture is skipped and the
+		// handler must return 200.
+		rr = doRequest(t, router, http.MethodPost,
+			"/api/ui/jobs/"+jobID+"/milestones/"+m1ID+"/approve", nil, emp2Tok)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("approve milestone (no intent): expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		// Milestone must be PAID.
+		var status string
+		if err := app.DB.QueryRow(`SELECT status FROM milestones WHERE id = ?`, m1ID).Scan(&status); err != nil {
+			t.Fatalf("query milestone status: %v", err)
+		}
+		if status != "PAID" {
+			t.Errorf("expected milestone status PAID, got %q", status)
+		}
+
+		// The response body should be the updated milestone.
+		var m Milestone
+		if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
+			t.Fatalf("decode milestone response: %v", err)
+		}
+		if m.Status != "PAID" {
+			t.Errorf("response milestone status: expected PAID, got %q", m.Status)
+		}
+	})
 }

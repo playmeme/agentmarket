@@ -619,29 +619,88 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := app.DB.Exec(
-		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND sow_id = (SELECT id FROM sow WHERE job_id = ?) AND status = 'REVIEW_REQUESTED'`,
+	// Read the milestone's Stripe payment intent before we mutate status, so we
+	// can capture it atomically with the APPROVED→PAID transition. We also verify
+	// the milestone belongs to this job in the same query.
+	var milestoneStripeIntent sql.NullString
+	var milestoneCurrentStatus string
+	err = app.DB.QueryRow(
+		`SELECT m.stripe_payment_intent, m.status
+		 FROM milestones m
+		 WHERE m.id = ? AND m.sow_id = (SELECT id FROM sow WHERE job_id = ?)`,
 		milestoneID, jobID,
-	)
+	).Scan(&milestoneStripeIntent, &milestoneCurrentStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "milestone not found for this job")
+		return
+	}
 	if err != nil {
-		log.Error("milestone approval failed: database error", "job_id", jobID, "milestone_id", milestoneID, "error", err)
+		log.Error("milestone approval: db error fetching milestone intent", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneCurrentStatus != "REVIEW_REQUESTED" {
+		writeError(w, http.StatusBadRequest, "milestone not found or not in REVIEW_REQUESTED status")
+		return
+	}
+
+	// Capture the Stripe payment intent for this milestone BEFORE marking it PAID.
+	// Each milestone has its own intent (stored by the webhook handler), so
+	// intermediate milestones are captured here rather than waiting for delivery
+	// approval, which would only capture the final intent.
+	if milestoneStripeIntent.Valid && milestoneStripeIntent.String != "" {
+		stripe.Key = app.Config.StripeSecretKey
+		if _, stripeErr := paymentintent.Capture(milestoneStripeIntent.String, nil); stripeErr != nil {
+			log.Error("milestone approval: stripe capture failed", "job_id", jobID, "milestone_id", milestoneID,
+				"payment_intent", milestoneStripeIntent.String, "error", stripeErr)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to capture milestone payment: %v", stripeErr))
+			return
+		}
+		log.Info("milestone payment captured", "job_id", jobID, "milestone_id", milestoneID,
+			"payment_intent", milestoneStripeIntent.String)
+	}
+
+	// Atomically transition REVIEW_REQUESTED → APPROVED → PAID inside a single
+	// transaction so a partial failure cannot leave the milestone in APPROVED
+	// without being PAID (or vice-versa).
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("milestone approval: failed to begin transaction", "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
+	result, err := tx.Exec(
+		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND status = 'REVIEW_REQUESTED'`,
+		milestoneID,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		log.Error("milestone approval failed: database error on APPROVED", "job_id", jobID, "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
+		_ = tx.Rollback()
 		writeError(w, http.StatusBadRequest, "milestone not found or not in REVIEW_REQUESTED status")
 		return
 	}
 
 	// Mark the approved milestone as PAID (deliverables confirmed, payment is captured).
-	if _, err := app.DB.Exec(
+	if _, err := tx.Exec(
 		`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		milestoneID,
 	); err != nil {
+		_ = tx.Rollback()
 		log.Error("milestone approval: failed to mark milestone PAID", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("milestone approval: failed to commit transaction", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}

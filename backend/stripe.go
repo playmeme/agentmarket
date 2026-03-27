@@ -286,6 +286,22 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			paymentIntentID = cs.PaymentIntent.ID
 		}
 
+		// If this checkout session was for a specific milestone, store the payment
+		// intent on that milestone row so ApproveMilestoneHandler can capture it
+		// later. We do this before updating the job so the intent is persisted even
+		// if the job update races with another request.
+		if paymentIntentID != "" {
+			if _, milestoneErr := app.DB.Exec(
+				`UPDATE milestones SET stripe_payment_intent = ?, stripe_checkout_session_id = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = (SELECT current_milestone_id FROM jobs WHERE stripe_checkout_session_id = ?)
+				   AND stripe_payment_intent = ''`,
+				paymentIntentID, cs.ID, cs.ID,
+			); milestoneErr != nil {
+				log.Error("webhook: failed to store payment intent on milestone", "session_id", cs.ID, "error", milestoneErr)
+				// Non-fatal: log and continue — the job update below still moves the job to IN_PROGRESS.
+			}
+		}
+
 		result, err := app.DB.Exec(
 			`UPDATE jobs SET status = 'IN_PROGRESS', stripe_payment_intent = ?, updated_at = CURRENT_TIMESTAMP
 			 WHERE stripe_checkout_session_id = ? AND status = 'AWAITING_PAYMENT'`,
