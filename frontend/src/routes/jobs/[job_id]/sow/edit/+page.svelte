@@ -125,7 +125,7 @@
 				// No SoW yet — pre-populate from Job Brief data
 				editDetailedSpec = '';
 				editWorkProcess = '';
-				editPriceDollars = job ? (job.total_payout / 100).toFixed(2) : '';
+				editPriceDollars = job ? String(job.total_payout) : '';
 				editTimelineDays = job?.timeline_days ? String(job.timeline_days) : '';
 			}
 
