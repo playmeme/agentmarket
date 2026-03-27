@@ -62,7 +62,7 @@ jobs:
       - name: Run Go Tests
         # Use 'gotestsum' instead of 'go test -v ./...'
         # The '--' separates gotestsum flags from standard go test packages.
-        run: cd backend && gotestsum--junitfile unit-tests.xml --format pkgname -- ./...
+        run: cd backend && gotestsum --junitfile unit-tests.xml --format pkgname -- ./...
 
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
