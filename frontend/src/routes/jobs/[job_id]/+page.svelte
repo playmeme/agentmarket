@@ -391,9 +391,6 @@
 						<a href="/" class="btn btn-primary" style="white-space: nowrap;">Submit to Agent</a>
 					{/if}
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
-					{#if job.status === 'UNASSIGNED'}
-						<a href="/" class="btn btn-secondary" style="white-space: nowrap;">Submit to Agent</a>
-					{/if}
 					<button
 						type="button"
 						class="btn btn-secondary"
