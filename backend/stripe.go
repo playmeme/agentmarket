@@ -106,6 +106,39 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the milestone amount is $0, skip Stripe entirely and advance the job.
+	if baseAmountCents == 0 && currentMilestoneID != "" {
+		if _, dbErr := app.DB.Exec(
+			`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			currentMilestoneID,
+		); dbErr != nil {
+			log.Error("checkout: failed to mark $0 milestone PAID", "milestone_id", currentMilestoneID, "error", dbErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		_, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			nullableString(currentMilestoneID), jobID,
+		)
+		if dbErr != nil {
+			log.Error("checkout: failed to update job to IN_PROGRESS for $0 milestone", "job_id", jobID, "error", dbErr)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		log.Info("checkout: $0 milestone bypassed Stripe, job moved to IN_PROGRESS", "job_id", jobID, "milestone_id", currentMilestoneID, "employer_id", employerID)
+
+		_ = app.CreateNotification(employerID, jobID, NotifPaymentDue,
+			"Milestone started",
+			fmt.Sprintf("Milestone %d is $0 — no payment required, job started", currentMilestoneNumber))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"paid":    true,
+			"message": fmt.Sprintf("Milestone %d is $0 — no payment required", currentMilestoneNumber),
+		})
+		return
+	}
+
 	if baseAmountCents <= 0 {
 		writeError(w, http.StatusBadRequest, "charge amount must be greater than zero")
 		return
@@ -279,6 +312,22 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		paymentIntentID := ""
 		if cs.PaymentIntent != nil {
 			paymentIntentID = cs.PaymentIntent.ID
+		}
+
+		// If this checkout session was for a specific milestone, store the payment
+		// intent on that milestone row so ApproveMilestoneHandler can capture it
+		// later. We do this before updating the job so the intent is persisted even
+		// if the job update races with another request.
+		if paymentIntentID != "" {
+			if _, milestoneErr := app.DB.Exec(
+				`UPDATE milestones SET stripe_payment_intent = ?, stripe_checkout_session_id = ?, updated_at = CURRENT_TIMESTAMP
+				 WHERE id = (SELECT current_milestone_id FROM jobs WHERE stripe_checkout_session_id = ?)
+				   AND stripe_payment_intent = ''`,
+				paymentIntentID, cs.ID, cs.ID,
+			); milestoneErr != nil {
+				log.Error("webhook: failed to store payment intent on milestone", "session_id", cs.ID, "error", milestoneErr)
+				// Non-fatal: log and continue — the job update below still moves the job to IN_PROGRESS.
+			}
 		}
 
 		result, err := app.DB.Exec(

@@ -619,29 +619,88 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := app.DB.Exec(
-		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND sow_id = (SELECT id FROM sow WHERE job_id = ?) AND status = 'REVIEW_REQUESTED'`,
+	// Read the milestone's Stripe payment intent before we mutate status, so we
+	// can capture it atomically with the APPROVED→PAID transition. We also verify
+	// the milestone belongs to this job in the same query.
+	var milestoneStripeIntent sql.NullString
+	var milestoneCurrentStatus string
+	err = app.DB.QueryRow(
+		`SELECT m.stripe_payment_intent, m.status
+		 FROM milestones m
+		 WHERE m.id = ? AND m.sow_id = (SELECT id FROM sow WHERE job_id = ?)`,
 		milestoneID, jobID,
-	)
+	).Scan(&milestoneStripeIntent, &milestoneCurrentStatus)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "milestone not found for this job")
+		return
+	}
 	if err != nil {
-		log.Error("milestone approval failed: database error", "job_id", jobID, "milestone_id", milestoneID, "error", err)
+		log.Error("milestone approval: db error fetching milestone intent", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneCurrentStatus != "REVIEW_REQUESTED" {
+		writeError(w, http.StatusBadRequest, "milestone not found or not in REVIEW_REQUESTED status")
+		return
+	}
+
+	// Capture the Stripe payment intent for this milestone BEFORE marking it PAID.
+	// Each milestone has its own intent (stored by the webhook handler), so
+	// intermediate milestones are captured here rather than waiting for delivery
+	// approval, which would only capture the final intent.
+	if milestoneStripeIntent.Valid && milestoneStripeIntent.String != "" {
+		stripe.Key = app.Config.StripeSecretKey
+		if _, stripeErr := paymentintent.Capture(milestoneStripeIntent.String, nil); stripeErr != nil {
+			log.Error("milestone approval: stripe capture failed", "job_id", jobID, "milestone_id", milestoneID,
+				"payment_intent", milestoneStripeIntent.String, "error", stripeErr)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to capture milestone payment: %v", stripeErr))
+			return
+		}
+		log.Info("milestone payment captured", "job_id", jobID, "milestone_id", milestoneID,
+			"payment_intent", milestoneStripeIntent.String)
+	}
+
+	// Atomically transition REVIEW_REQUESTED → APPROVED → PAID inside a single
+	// transaction so a partial failure cannot leave the milestone in APPROVED
+	// without being PAID (or vice-versa).
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("milestone approval: failed to begin transaction", "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
+	result, err := tx.Exec(
+		`UPDATE milestones SET status = 'APPROVED', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND status = 'REVIEW_REQUESTED'`,
+		milestoneID,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		log.Error("milestone approval failed: database error on APPROVED", "job_id", jobID, "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
+		_ = tx.Rollback()
 		writeError(w, http.StatusBadRequest, "milestone not found or not in REVIEW_REQUESTED status")
 		return
 	}
 
 	// Mark the approved milestone as PAID (deliverables confirmed, payment is captured).
-	if _, err := app.DB.Exec(
+	if _, err := tx.Exec(
 		`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		milestoneID,
 	); err != nil {
+		_ = tx.Rollback()
 		log.Error("milestone approval: failed to mark milestone PAID", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Error("milestone approval: failed to commit transaction", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
@@ -1045,6 +1104,81 @@ func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
+// UIDeliverJobHandler allows an AGENT_MANAGER to submit a delivery via the UI (JWT auth).
+// This mirrors DeliverJobHandler (which uses API key auth) but is called from the web frontend.
+// POST /api/ui/jobs/{job_id}/deliver
+func (app *App) UIDeliverJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_deliver_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_MANAGER" {
+		log.Warn("authz failure: deliver job requires AGENT_MANAGER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_MANAGER role can submit deliveries")
+		return
+	}
+
+	managerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	// Verify the job belongs to one of this manager's agents and is in progress.
+	var agentID string
+	err := app.DB.QueryRow(
+		`SELECT j.agent_id FROM jobs j
+		   JOIN agents a ON j.agent_id = a.id
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'IN_PROGRESS'`,
+		jobID, managerID,
+	).Scan(&agentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+	if err != nil {
+		log.Error("ui deliver job: db error", "job_id", jobID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	var req DeliverJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'DELIVERED', delivery_notes = ?, delivery_url = ?, delivered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND agent_id = ? AND status = 'IN_PROGRESS'`,
+		req.DeliveryNotes, req.DeliveryURL, jobID, agentID,
+	)
+	if err != nil {
+		log.Error("ui deliver job: database error", "job_id", jobID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+
+	log.Info("job delivered via UI", "job_id", jobID, "manager_id", managerID, "delivery_url", req.DeliveryURL)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("ui deliver job: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	// Notify employer that job was delivered
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifMilestoneDelivered,
+		"Job delivered: "+j.Title,
+		"The agent has delivered the job. Please review and approve or request a revision.")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
 // ApproveDeliveryHandler captures the Stripe payment and completes the job (employer JWT auth).
 // POST /api/ui/jobs/{job_id}/approve-delivery
 func (app *App) ApproveDeliveryHandler(w http.ResponseWriter, r *http.Request) {
@@ -1335,17 +1469,20 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the job belongs to one of this manager's agents and is awaiting acceptance.
+	// Verify the job belongs to one of this manager's agents and is in a declinable status.
+	// Decline is permitted during PENDING_ACCEPTANCE (offer not yet accepted) and
+	// SOW_NEGOTIATION (negotiation in progress), matching the UI which shows the decline
+	// action in both states.
 	var agentID string
 	err := app.DB.QueryRow(
 		`SELECT j.agent_id
 		   FROM jobs j
 		   JOIN agents a ON j.agent_id = a.id
-		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'PENDING_ACCEPTANCE'`,
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION')`,
 		jobID, managerID,
 	).Scan(&agentID)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE or SOW_NEGOTIATION status")
 		return
 	}
 	if err != nil {
@@ -1357,7 +1494,7 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	// Reset the job to UNASSIGNED, clearing the agent assignment.
 	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
-		  WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		  WHERE id = ? AND agent_id = ? AND status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION')`,
 		jobID, agentID,
 	)
 	if err != nil {
@@ -1367,7 +1504,7 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE or SOW_NEGOTIATION status")
 		return
 	}
 

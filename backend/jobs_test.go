@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+
 // setupJobFixtures creates a verified employer, an agent handler, an agent, and returns them.
 func setupJobFixtures(t *testing.T, app *App) (employerID, managerID, agentID, agentAPIKey string) {
 	t.Helper()
@@ -372,6 +373,58 @@ func TestRetractOfferDuringSowNegotiation(t *testing.T) {
 	}
 	if retracted.AgentID != "" {
 		t.Errorf("expected agent_id cleared, got %q", retracted.AgentID)
+	}
+}
+
+// TestUIRejectJobDuringSowNegotiation verifies that an AGENT_MANAGER can reject (decline)
+// a job via the UI endpoint while the job is in SOW_NEGOTIATION status.
+// This is the regression case from issue #105: PR #106 fixed DeclineJobHandler (agent API-key
+// path) but UIRejectJobHandler still blocked the request with "not in PENDING_ACCEPTANCE status".
+func TestUIRejectJobDuringSowNegotiation(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, apiKey := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerToken := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Create job offer (PENDING_ACCEPTANCE) and have the agent accept it (SOW_NEGOTIATION).
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Sow negotiation decline test", TotalPayout: 400, TimelineDays: 3},
+		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	rr = doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/accept", nil, apiKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify job is now in SOW_NEGOTIATION.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID, nil, employerToken)
+	var updated Job
+	json.Unmarshal(rr.Body.Bytes(), &updated)
+	if updated.Status != "SOW_NEGOTIATION" {
+		t.Fatalf("expected SOW_NEGOTIATION, got %q", updated.Status)
+	}
+
+	// Manager declines during SOW_NEGOTIATION via the UI reject endpoint — must succeed.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/reject",
+		map[string]string{"reason": "scope too large"}, managerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ui reject during SOW_NEGOTIATION: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var rejected Job
+	json.Unmarshal(rr.Body.Bytes(), &rejected)
+	if rejected.Status != "UNASSIGNED" {
+		t.Errorf("expected UNASSIGNED after decline, got %q", rejected.Status)
+	}
+	if rejected.AgentID != "" {
+		t.Errorf("expected agent_id cleared after decline, got %q", rejected.AgentID)
 	}
 }
 

@@ -125,7 +125,7 @@
 				// No SoW yet — pre-populate from Job Brief data
 				editDetailedSpec = '';
 				editWorkProcess = '';
-				editPriceDollars = job ? (job.total_payout / 100).toFixed(2) : '';
+				editPriceDollars = job ? String(job.total_payout) : '';
 				editTimelineDays = job?.timeline_days ? String(job.timeline_days) : '';
 			}
 
@@ -322,12 +322,7 @@
 
 			<!-- Milestones section -->
 			<div class="card" style="margin-bottom: 1.5rem;">
-				<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-					<h2 style="margin: 0; font-size: 1.1rem;">Milestones</h2>
-					<button type="button" class="btn btn-secondary" onclick={addMilestone} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
-						+ Add milestone
-					</button>
-				</div>
+				<h2 style="margin: 0 0 1rem; font-size: 1.1rem;">Milestones</h2>
 
 				<!-- Milestone totals summary -->
 				{#if editPriceDollars && parseFloat(editPriceDollars) > 0}
@@ -401,6 +396,10 @@
 						</div>
 					</div>
 				{/each}
+
+				<button type="button" class="btn btn-secondary" onclick={addMilestone} style="font-size: 0.85rem; padding: 0.35rem 0.9rem; margin-top: 0.5rem;">
+					+ Add milestone
+				</button>
 			</div>
 
 			<div style="display: flex; gap: 0.75rem; align-items: center;">
