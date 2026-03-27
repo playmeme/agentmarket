@@ -16,10 +16,11 @@ import (
 
 // CreateCheckoutHandler creates a Stripe Checkout Session for a job (employer only).
 // POST /api/ui/jobs/{job_id}/checkout
-// Optional body: { "coupon_code": "M1PAID" }
-// If the coupon covers the full amount, Stripe is skipped and the job is moved to
-// IN_PROGRESS directly. If it is a partial discount, Stripe is called with the
-// reduced amount.
+// Optional body: { "coupon_code": "M1PAID", "tip_amount": 5.00 }
+// If the coupon covers the full amount (and no tip), Stripe is skipped and the job
+// is moved to IN_PROGRESS directly. If it is a partial discount, Stripe is called
+// with the reduced amount. An optional tip (fixed dollar amount) is added on top of
+// the post-coupon amount and stored separately in the job record.
 func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "create_checkout")
 
@@ -33,12 +34,20 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	employerID, _ := r.Context().Value(contextKeyUserID).(string)
 	jobID := chi.URLParam(r, "job_id")
 
-	// Parse optional body for coupon_code (body may be empty for no-coupon flow).
+	// Parse optional body for coupon_code and tip_amount (body may be empty).
 	var reqBody struct {
-		CouponCode string `json:"coupon_code"`
+		CouponCode string  `json:"coupon_code"`
+		TipAmount  float64 `json:"tip_amount"` // dollars, e.g. 5.00; defaults to 0
 	}
 	// Ignore decode errors — body is optional; an empty/missing body is fine.
 	_ = json.NewDecoder(r.Body).Decode(&reqBody)
+
+	// Convert tip to cents; reject negative values.
+	tipCents := int64(reqBody.TipAmount * 100)
+	if tipCents < 0 {
+		writeError(w, http.StatusBadRequest, "tip_amount must be zero or positive")
+		return
+	}
 
 	// Verify job belongs to employer and is in AWAITING_PAYMENT
 	var jobStatus string
@@ -176,8 +185,17 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		log.Info("checkout: coupon applied", "code", coupon.Code, "discount_cents", discountCents, "final_cents", chargeAmountCents)
 	}
 
-	// If the coupon covers the full amount, skip Stripe entirely.
-	if chargeAmountCents <= 0 {
+	// --- Tip handling ---
+	// The tip is applied after the coupon discount. A tip never reduces the charge amount.
+	// If the coupon covers the full base amount but a tip is present, we still go through
+	// Stripe (we cannot skip it when money is owed).
+	totalChargeCents := chargeAmountCents + tipCents
+	if tipCents > 0 {
+		log.Info("checkout: tip added", "tip_cents", tipCents, "base_after_coupon", chargeAmountCents, "total", totalChargeCents)
+	}
+
+	// If the coupon covers the full amount AND there is no tip, skip Stripe entirely.
+	if chargeAmountCents <= 0 && tipCents == 0 {
 		// Do NOT mark the milestone PAID here. Payment being captured only means
 		// the employer has funded this milestone phase; the milestone stays PENDING
 		// so the agent can submit deliverables via SubmitMilestoneHandler, which
@@ -186,7 +204,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		//
 		// Mark job as IN_PROGRESS directly.
 		_, dbErr := app.DB.Exec(
-			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, tip_cents = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 			nullableString(currentMilestoneID), jobID,
 		)
 		if dbErr != nil {
@@ -219,21 +237,37 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		productName = fmt.Sprintf("Job Payment: %s", jobID)
 	}
 
+	lineItems := []*stripe.CheckoutSessionLineItemParams{
+		{
+			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+				Currency: stripe.String("usd"),
+				ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+					Name: stripe.String(productName),
+				},
+				UnitAmount: stripe.Int64(chargeAmountCents),
+			},
+			Quantity: stripe.Int64(1),
+		},
+	}
+
+	// Add tip as a separate line item so it is visible on the Stripe receipt.
+	if tipCents > 0 {
+		lineItems = append(lineItems, &stripe.CheckoutSessionLineItemParams{
+			PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+				Currency: stripe.String("usd"),
+				ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+					Name: stripe.String("Tip"),
+				},
+				UnitAmount: stripe.Int64(tipCents),
+			},
+			Quantity: stripe.Int64(1),
+		})
+	}
+
 	params := &stripe.CheckoutSessionParams{
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		LineItems: []*stripe.CheckoutSessionLineItemParams{
-			{
-				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
-					Currency: stripe.String("usd"),
-					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
-						Name: stripe.String(productName),
-					},
-					UnitAmount: stripe.Int64(chargeAmountCents),
-				},
-				Quantity: stripe.Int64(1),
-			},
-		},
-		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)),
+		LineItems:          lineItems,
+		Mode:               stripe.String(string(stripe.CheckoutSessionModePayment)),
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
 			CaptureMethod: stripe.String("manual"),
 		},
@@ -248,10 +282,10 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save checkout session ID and current milestone (if any) to job
+	// Save checkout session ID, current milestone (if any), and tip to job.
 	_, err = app.DB.Exec(
-		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		cs.ID, nullableString(currentMilestoneID), jobID,
+		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, tip_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		cs.ID, nullableString(currentMilestoneID), tipCents, jobID,
 	)
 	if err != nil {
 		log.Error("checkout: failed to save session id", "job_id", jobID, "session_id", cs.ID, "error", err)
@@ -268,7 +302,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID, "charge_cents", chargeAmountCents)
+	log.Info("checkout session created", "job_id", jobID, "session_id", cs.ID, "employer_id", employerID, "charge_cents", chargeAmountCents, "tip_cents", tipCents, "total_cents", totalChargeCents)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
