@@ -780,3 +780,239 @@ func TestDeliverJobNoMilestonesStillWorks(t *testing.T) {
 		t.Errorf("expected DELIVERED status, got %q", delivered.Status)
 	}
 }
+
+// TestDeclineJobResetsSowAccepted verifies that when an agent declines a job via the
+// agent API key path, both SoW accepted fields are reset to false. This ensures that
+// if the employer re-offers the same job, the new offer starts with a clean acceptance
+// state (issue #120).
+func TestDeclineJobResetsSowAccepted(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerToken := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Employer creates a job offer.
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Decline SoW reset test", TotalPayout: 300, TimelineDays: 5},
+		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Agent accepts the offer (moves to SOW_NEGOTIATION).
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/accept", nil, managerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Employer updates the SoW and both parties accept it.
+	sowBody := SOWRequest{
+		DetailedSpec: "Build the thing",
+		WorkProcess:  "Daily standups",
+		PriceCents:   30000,
+		TimelineDays: 5,
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow", sowBody, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow/accept", nil, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("employer accept sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify employer_accepted is now true before decline.
+	var sowBeforeDecline SOW
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID+"/sow", nil, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get sow before decline: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	json.Unmarshal(rr.Body.Bytes(), &sowBeforeDecline)
+	if !sowBeforeDecline.EmployerAccepted {
+		t.Fatal("expected employer_accepted to be true before decline")
+	}
+
+	// Agent declines the job (API key path).
+	rr = doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/decline", nil, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("decline: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var declined Job
+	json.Unmarshal(rr.Body.Bytes(), &declined)
+	if declined.Status != "UNASSIGNED" {
+		t.Fatalf("expected UNASSIGNED after decline, got %q", declined.Status)
+	}
+
+	// Verify both SoW accepted fields are reset.
+	var agentAccepted, employerAccepted int
+	err := app.DB.QueryRow(
+		`SELECT agent_accepted, employer_accepted FROM sow WHERE job_id = ?`, job.ID,
+	).Scan(&agentAccepted, &employerAccepted)
+	if err != nil {
+		t.Fatalf("query sow after decline: %v", err)
+	}
+	if agentAccepted != 0 {
+		t.Errorf("expected agent_accepted = 0 after decline, got %d", agentAccepted)
+	}
+	if employerAccepted != 0 {
+		t.Errorf("expected employer_accepted = 0 after decline, got %d", employerAccepted)
+	}
+}
+
+// TestUIRejectJobResetsSowAccepted verifies that when an AGENT_MANAGER rejects a job
+// via the UI endpoint, both SoW accepted fields are reset. This is the UI path
+// counterpart to TestDeclineJobResetsSowAccepted (issue #120).
+func TestUIRejectJobResetsSowAccepted(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, _ := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerToken := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Employer creates a job offer.
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "UI reject SoW reset test", TotalPayout: 400, TimelineDays: 7},
+		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Agent accepts the offer (moves to SOW_NEGOTIATION).
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/accept", nil, managerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Both parties accept the SoW.
+	sowBody := SOWRequest{
+		DetailedSpec: "Build it",
+		WorkProcess:  "Async",
+		PriceCents:   40000,
+		TimelineDays: 7,
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow", sowBody, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow/accept", nil, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("employer accept sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Manager rejects via the UI endpoint.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/reject",
+		map[string]string{"reason": "not a good fit"}, managerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ui reject: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var rejected Job
+	json.Unmarshal(rr.Body.Bytes(), &rejected)
+	if rejected.Status != "UNASSIGNED" {
+		t.Fatalf("expected UNASSIGNED after reject, got %q", rejected.Status)
+	}
+
+	// Both SoW accepted fields must be reset.
+	var agentAccepted, employerAccepted int
+	err := app.DB.QueryRow(
+		`SELECT agent_accepted, employer_accepted FROM sow WHERE job_id = ?`, job.ID,
+	).Scan(&agentAccepted, &employerAccepted)
+	if err != nil {
+		t.Fatalf("query sow after ui reject: %v", err)
+	}
+	if agentAccepted != 0 {
+		t.Errorf("expected agent_accepted = 0 after ui reject, got %d", agentAccepted)
+	}
+	if employerAccepted != 0 {
+		t.Errorf("expected employer_accepted = 0 after ui reject, got %d", employerAccepted)
+	}
+}
+
+// TestAssignAgentResetsSowAccepted verifies that when an employer re-offers a job to a
+// new agent via AssignAgentHandler, the SoW accepted fields from a previous negotiation
+// are reset to false (issue #120).
+func TestAssignAgentResetsSowAccepted(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerToken := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerToken := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Create a second agent to re-offer to.
+	managerID2, _ := createTestUser(t, app, "AGENT_MANAGER")
+	agentID2, _ := createTestAgent(t, app, managerID2)
+
+	// Employer creates a job with agent 1.
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Re-offer SoW reset test", TotalPayout: 500, TimelineDays: 10},
+		employerToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Agent 1 accepts, SOW is negotiated, employer accepts SoW.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/accept", nil, managerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	sowBody := SOWRequest{
+		DetailedSpec: "Spec",
+		WorkProcess:  "Process",
+		PriceCents:   50000,
+		TimelineDays: 10,
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow", sowBody, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow/accept", nil, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("employer accept sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Agent 1 declines (job resets to UNASSIGNED).
+	rr = doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/decline", nil, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("decline: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Employer re-offers to agent 2 via AssignAgentHandler.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/assign",
+		AssignAgentRequest{AgentID: agentID2}, employerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assign agent 2: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var assigned Job
+	json.Unmarshal(rr.Body.Bytes(), &assigned)
+	if assigned.Status != "PENDING_ACCEPTANCE" {
+		t.Fatalf("expected PENDING_ACCEPTANCE after re-offer, got %q", assigned.Status)
+	}
+
+	// Both SoW accepted fields must be reset after re-offer.
+	var agentAccepted, employerAccepted int
+	err := app.DB.QueryRow(
+		`SELECT agent_accepted, employer_accepted FROM sow WHERE job_id = ?`, job.ID,
+	).Scan(&agentAccepted, &employerAccepted)
+	if err != nil {
+		t.Fatalf("query sow after re-offer: %v", err)
+	}
+	if agentAccepted != 0 {
+		t.Errorf("expected agent_accepted = 0 after re-offer, got %d", agentAccepted)
+	}
+	if employerAccepted != 0 {
+		t.Errorf("expected employer_accepted = 0 after re-offer, got %d", employerAccepted)
+	}
+}
