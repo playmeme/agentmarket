@@ -142,6 +142,28 @@
 		return status.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 	}
 
+	// Maps DB milestone status values to user-friendly progress labels.
+	// DB values: PENDING, REVIEW_REQUESTED, APPROVED, PAID
+	function milestoneProgressLabel(status: string): string {
+		const map: Record<string, string> = {
+			PENDING: 'Not Started',
+			REVIEW_REQUESTED: 'In Review',
+			APPROVED: 'Approved',
+			PAID: 'Paid'
+		};
+		return map[status] ?? statusLabel(status);
+	}
+
+	function milestoneBadgeClass(status: string): string {
+		const map: Record<string, string> = {
+			PENDING: 'badge-pending',
+			REVIEW_REQUESTED: 'badge-sow',
+			APPROVED: 'badge-delivered',
+			PAID: 'badge-completed'
+		};
+		return map[status] ?? 'badge-pending';
+	}
+
 	async function loadJob() {
 		try {
 			const res = await apiFetch(`/api/ui/jobs/${jobId}`);
@@ -696,8 +718,8 @@
 								<strong style="font-size: 0.95rem;">{milestone.title}</strong>
 								<div style="display: flex; align-items: center; gap: 0.75rem;">
 									<span style="font-size: 0.9rem; color: #555;">${milestone.amount.toFixed(2)}</span>
-									<span class="badge {milestone.status === 'COMPLETED' ? 'badge-completed' : 'badge-pending'}">
-										{statusLabel(milestone.status)}
+									<span class="badge {milestoneBadgeClass(milestone.status)}">
+										{milestoneProgressLabel(milestone.status)}
 									</span>
 								</div>
 							</div>
