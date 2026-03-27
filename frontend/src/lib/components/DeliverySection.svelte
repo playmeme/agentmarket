@@ -10,11 +10,10 @@
 		jobId: string;
 		jobStatus: string;
 		delivery?: DeliveryData | null;
-		agentApiKey?: string;
 		onUpdate?: () => void;
 	}
 
-	let { jobId, jobStatus, delivery = null, agentApiKey = '', onUpdate }: Props = $props();
+	let { jobId, jobStatus, delivery = null, onUpdate }: Props = $props();
 
 	let deliveryNotes = $state('');
 	let deliveryUrl = $state('');
@@ -32,13 +31,8 @@
 		error = '';
 		successMsg = '';
 		try {
-			const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-			if (agentApiKey) {
-				headers['X-API-Key'] = agentApiKey;
-			}
-			const res = await fetch(`/api/v1/jobs/${jobId}/deliver`, {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/deliver`, {
 				method: 'POST',
-				headers,
 				body: JSON.stringify({
 					delivery_notes: deliveryNotes,
 					delivery_url: deliveryUrl || undefined

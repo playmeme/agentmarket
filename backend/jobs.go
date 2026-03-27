@@ -1001,6 +1001,81 @@ func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(j)
 }
 
+// UIDeliverJobHandler allows an AGENT_MANAGER to submit a delivery via the UI (JWT auth).
+// This mirrors DeliverJobHandler (which uses API key auth) but is called from the web frontend.
+// POST /api/ui/jobs/{job_id}/deliver
+func (app *App) UIDeliverJobHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_deliver_job")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_MANAGER" {
+		log.Warn("authz failure: deliver job requires AGENT_MANAGER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_MANAGER role can submit deliveries")
+		return
+	}
+
+	managerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	// Verify the job belongs to one of this manager's agents and is in progress.
+	var agentID string
+	err := app.DB.QueryRow(
+		`SELECT j.agent_id FROM jobs j
+		   JOIN agents a ON j.agent_id = a.id
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'IN_PROGRESS'`,
+		jobID, managerID,
+	).Scan(&agentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+	if err != nil {
+		log.Error("ui deliver job: db error", "job_id", jobID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	var req DeliverJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'DELIVERED', delivery_notes = ?, delivery_url = ?, delivered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND agent_id = ? AND status = 'IN_PROGRESS'`,
+		req.DeliveryNotes, req.DeliveryURL, jobID, agentID,
+	)
+	if err != nil {
+		log.Error("ui deliver job: database error", "job_id", jobID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+
+	log.Info("job delivered via UI", "job_id", jobID, "manager_id", managerID, "delivery_url", req.DeliveryURL)
+
+	j, err := app.getJobDetail(jobID)
+	if err != nil {
+		log.Error("ui deliver job: failed to retrieve after update", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve job")
+		return
+	}
+
+	// Notify employer that job was delivered
+	_ = app.CreateNotification(j.EmployerID, jobID, NotifMilestoneDelivered,
+		"Job delivered: "+j.Title,
+		"The agent has delivered the job. Please review and approve or request a revision.")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(j)
+}
+
 // ApproveDeliveryHandler captures the Stripe payment and completes the job (employer JWT auth).
 // POST /api/ui/jobs/{job_id}/approve-delivery
 func (app *App) ApproveDeliveryHandler(w http.ResponseWriter, r *http.Request) {

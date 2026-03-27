@@ -129,7 +129,8 @@ func NewRouter(app *App) *chi.Mux {
 				r.Post("/{id}/accept", app.UIAcceptJobHandler)
 				r.Post("/{id}/reject", app.UIRejectJobHandler)
 				r.Post("/{id}/retract", app.RetractOfferHandler)
-				r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
+				r.Post("/{job_id}/deliver", app.UIDeliverJobHandler)
+			r.Post("/{job_id}/approve-delivery", app.ApproveDeliveryHandler)
 				r.Post("/{job_id}/request-revision", app.RequestRevisionHandler)
 			})
 
