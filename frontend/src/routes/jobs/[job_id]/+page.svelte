@@ -695,7 +695,7 @@
 							<div class="milestone-header">
 								<strong style="font-size: 0.95rem;">{milestone.title}</strong>
 								<div style="display: flex; align-items: center; gap: 0.75rem;">
-									<span style="font-size: 0.9rem; color: #555;">${(milestone.amount / 100).toFixed(2)}</span>
+									<span style="font-size: 0.9rem; color: #555;">${milestone.amount.toFixed(2)}</span>
 									<span class="badge {milestone.status === 'COMPLETED' ? 'badge-completed' : 'badge-pending'}">
 										{statusLabel(milestone.status)}
 									</span>
