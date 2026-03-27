@@ -476,6 +476,15 @@ func (app *App) AssignAgentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reset SoW acceptance flags in case this job was previously declined and is now being
+	// re-offered to a new agent. The new offer must start with a clean acceptance state.
+	if _, sowErr := app.DB.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	); sowErr != nil {
+		log.Warn("assign agent: failed to reset sow accepted fields", "job_id", jobID, "error", sowErr)
+	}
+
 	log.Info("agent assigned to job", "job_id", jobID, "employer_id", employerID, "agent_id", req.AgentID)
 
 	// Notify agent's manager of job offer
@@ -911,6 +920,14 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "job not found or not in a declinable status")
 		return
+	}
+
+	// Reset SoW acceptance flags so a re-offer starts with a clean slate.
+	if _, sowErr := app.DB.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	); sowErr != nil {
+		log.Warn("job decline: failed to reset sow accepted fields", "job_id", jobID, "error", sowErr)
 	}
 
 	log.Info("job declined", "job_id", jobID, "agent_id", agentID)
@@ -1462,6 +1479,14 @@ func (app *App) UIRejectJobHandler(w http.ResponseWriter, r *http.Request) {
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE or SOW_NEGOTIATION status")
 		return
+	}
+
+	// Reset SoW acceptance flags so a re-offer starts with a clean slate.
+	if _, sowErr := app.DB.Exec(
+		`UPDATE sow SET agent_accepted = 0, employer_accepted = 0, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		jobID,
+	); sowErr != nil {
+		log.Warn("ui reject job: failed to reset sow accepted fields", "job_id", jobID, "error", sowErr)
 	}
 
 	log.Info("job rejected via UI, reset to UNASSIGNED", "job_id", jobID, "manager_id", managerID)
