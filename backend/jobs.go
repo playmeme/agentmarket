@@ -750,8 +750,18 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 					m.OrderIndex+1, nextMilestoneNumber, nextMilestoneAmount))
 		}
 	} else if nextMilestoneErr == sql.ErrNoRows {
-		// No more milestones — job proceeds normally (stays IN_PROGRESS until delivery).
-		log.Info("milestone approved: all milestones complete or no next milestone", "job_id", jobID)
+		// No more PENDING milestones — all milestones have been completed.
+		// Mark the job as COMPLETED now; the employer has already paid each milestone
+		// so there is no separate "approve delivery" step for milestone-based jobs.
+		if _, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'COMPLETED', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			jobID,
+		); dbErr != nil {
+			log.Error("milestone approval: failed to mark job COMPLETED after last milestone", "job_id", jobID, "error", dbErr)
+			// Non-fatal: log and continue — milestone is still PAID even if the job status update fails.
+		} else {
+			log.Info("milestone approved: last milestone paid, job marked COMPLETED", "job_id", jobID)
+		}
 	} else {
 		log.Error("milestone approval: failed to check next milestone", "sow_id", m.SowID, "error", nextMilestoneErr)
 		// Non-fatal: proceed.
@@ -1013,6 +1023,10 @@ type DeliverJobRequest struct {
 
 // DeliverJobHandler marks a job as DELIVERED (agent API key auth).
 // POST /api/v1/jobs/{job_id}/deliver
+//
+// This endpoint is for jobs WITHOUT milestones. If the job has milestones,
+// deliveries must be submitted per-milestone via POST /api/v1/jobs/{job_id}/milestones/{milestone_id}/submit
+// so that each milestone can be individually reviewed and approved before the job completes.
 func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 	log := slog.With("request_id", requestID(r.Context()), "handler", "deliver_job")
 
@@ -1022,6 +1036,36 @@ func (app *App) DeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeliverJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Verify the job exists, belongs to this agent, and is IN_PROGRESS.
+	var exists int
+	err := app.DB.QueryRow(
+		"SELECT COUNT(*) FROM jobs WHERE id = ? AND agent_id = ? AND status = 'IN_PROGRESS'",
+		jobID, agentID,
+	).Scan(&exists)
+	if err != nil || exists == 0 {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+
+	// Block delivery on jobs that have milestones — each milestone must be
+	// submitted individually via the SubmitMilestoneHandler so the employer
+	// can review and approve them one by one.
+	var milestoneCount int
+	if err := app.DB.QueryRow(
+		`SELECT COUNT(*) FROM milestones m
+		 JOIN sow s ON m.sow_id = s.id
+		 WHERE s.job_id = ?`,
+		jobID,
+	).Scan(&milestoneCount); err != nil {
+		log.Error("job deliver: failed to check milestones", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneCount > 0 {
+		writeError(w, http.StatusBadRequest, "job has milestones — submit each milestone via POST /milestones/{milestone_id}/submit instead")
 		return
 	}
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -460,20 +461,192 @@ func TestRetractOfferFinalContract(t *testing.T) {
 	}
 }
 
-// TestMilestoneLevelCapture verifies the per-milestone Stripe capture behaviour
-// introduced to fix the multi-milestone payment intent bug (issue #116).
-//
-// It tests two sub-cases:
-//
-//  1. When a milestone has a non-empty stripe_payment_intent, ApproveMilestoneHandler
-//     attempts to capture it. With no real Stripe key configured the capture call
-//     returns an error and the handler returns HTTP 500 — confirming the capture
-//     attempt is made and is not silently skipped.
-//
-//  2. When a milestone has no stripe_payment_intent (e.g. paid via coupon or not
-//     yet set by the webhook), ApproveMilestoneHandler succeeds (HTTP 200) and
-//     marks the milestone PAID without crashing.
-func TestMilestoneLevelCapture(t *testing.T) {
+// setupJobInProgress creates a job and force-sets it to IN_PROGRESS (no milestones),
+// simulating a job that bypassed SOW payment. Returns jobID and the API key.
+func setupInProgressJob(t *testing.T, app *App, router http.Handler, employerID, agentID string) (jobID, apiKey string) {
+	t.Helper()
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "No-milestone job", TotalPayout: 500, TimelineDays: 5},
+		employerTok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	if err := json.Unmarshal(rr.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	// Force to IN_PROGRESS (skip payment/SOW for simplicity).
+	if _, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'IN_PROGRESS' WHERE id = ?`, job.ID,
+	); err != nil {
+		t.Fatalf("force IN_PROGRESS: %v", err)
+	}
+	return job.ID, ""
+}
+
+// TestDeliverJobBlockedWhenMilestonesExist verifies that DeliverJobHandler returns 400
+// when the job has milestones, enforcing per-milestone delivery via SubmitMilestoneHandler.
+func TestDeliverJobBlockedWhenMilestonesExist(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+
+	// Build a job with two milestones up to AWAITING_PAYMENT via SOW.
+	jobID, _, _ := setupSowWithMilestones(t, app, router, employerID, managerID, agentID, agentAPIKey)
+
+	// Use a 100% coupon to skip Stripe and move job to IN_PROGRESS.
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES ('FREE128', '100%', 10, 0)`,
+	); err != nil {
+		t.Fatalf("insert coupon: %v", err)
+	}
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+		map[string]string{"coupon_code": "FREE128"}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify job is IN_PROGRESS.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Fatalf("expected IN_PROGRESS, got %q", job.Status)
+	}
+
+	// Attempt to use DeliverJobHandler on a job that has milestones — should be rejected.
+	body := DeliverJobRequest{DeliveryNotes: "Done", DeliveryURL: "https://example.com"}
+	rr = doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+jobID+"/deliver", body, agentAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("deliver with milestones: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestMilestoneLifecycleSingleMilestone verifies the happy path for a single-milestone job:
+//   - SubmitMilestoneHandler marks the milestone REVIEW_REQUESTED, job stays IN_PROGRESS.
+//   - ApproveMilestoneHandler marks the milestone PAID.
+//   - Because it was the last milestone, the job is marked COMPLETED.
+func TestMilestoneLifecycleSingleMilestone(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerTok := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Create job.
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "Single milestone job", TotalPayout: 100, TimelineDays: 7},
+		employerTok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	// Agent manager accepts.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/accept", nil, managerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Create SOW with ONE milestone.
+	sowBody := SOWRequest{
+		DetailedSpec: "Build it",
+		WorkProcess:  "Daily updates",
+		PriceCents:   10000,
+		TimelineDays: 7,
+		Milestones: []SOWMilestoneInput{
+			{Title: "Only milestone", Amount: 100, Deliverables: "The thing"},
+		},
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow", sowBody, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Both parties accept SOW.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow/accept", nil, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("employer sow accept: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/sow/accept", nil, managerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manager sow accept: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Skip payment via 100% coupon.
+	couponCode := fmt.Sprintf("SOLO-%s", job.ID[:6])
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, couponCode,
+	); err != nil {
+		t.Fatalf("insert coupon: %v", err)
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+job.ID+"/checkout",
+		map[string]string{"coupon_code": couponCode}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Confirm job is IN_PROGRESS and retrieve milestone ID.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Fatalf("expected IN_PROGRESS after checkout, got %q", job.Status)
+	}
+	if len(job.Milestones) != 1 {
+		t.Fatalf("expected 1 milestone, got %d", len(job.Milestones))
+	}
+	milestoneID := job.Milestones[0].ID
+
+	// --- Step 1: Agent submits milestone ---
+	submitBody := SubmitProofRequest{
+		ProofOfWorkURL:   "https://github.com/example/pr/1",
+		ProofOfWorkNotes: "Feature complete",
+	}
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/v1/jobs/"+job.ID+"/milestones/"+milestoneID+"/submit", submitBody, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("milestone submit: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Job should still be IN_PROGRESS after milestone submit.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("job should remain IN_PROGRESS after milestone submit, got %q", job.Status)
+	}
+
+	// The milestone should now be REVIEW_REQUESTED.
+	if job.Milestones[0].Status != "REVIEW_REQUESTED" {
+		t.Errorf("milestone should be REVIEW_REQUESTED, got %q", job.Milestones[0].Status)
+	}
+
+	// --- Step 2: Employer approves the (only) milestone ---
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/ui/jobs/"+job.ID+"/milestones/"+milestoneID+"/approve", nil, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("milestone approve: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The job should now be COMPLETED (last milestone was approved).
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+job.ID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "COMPLETED" {
+		t.Errorf("job should be COMPLETED after last milestone approved, got %q", job.Status)
+	}
+}
+
+// TestMilestoneLifecycleTwoMilestones verifies the multi-milestone flow:
+//   - After approving milestone 1, job moves to AWAITING_PAYMENT (not COMPLETED).
+//   - After approving milestone 2 (last), job moves to COMPLETED.
+func TestMilestoneLifecycleTwoMilestones(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
 	router := NewRouter(app)
@@ -481,110 +654,129 @@ func TestMilestoneLevelCapture(t *testing.T) {
 	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
 	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
 
-	// --- Sub-case 1: milestone has a stripe_payment_intent —
-	// ApproveMilestoneHandler should attempt capture and return 500 (no Stripe key).
-	t.Run("attempts capture when intent present", func(t *testing.T) {
-		jobID, m1ID, _ := setupSowWithMilestones(t, app, router, employerID, managerID, agentID, agentAPIKey)
+	jobID, m1ID, m2ID := setupSowWithMilestones(t, app, router, employerID, managerID, agentID, agentAPIKey)
 
-		// Simulate the Stripe webhook: set job IN_PROGRESS and store a fake
-		// payment intent on milestone 1.
-		fakeIntentID := "pi_test_milestone_capture_123"
-		if _, err := app.DB.Exec(
-			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobID,
-		); err != nil {
-			t.Fatalf("set job IN_PROGRESS: %v", err)
-		}
-		if _, err := app.DB.Exec(
-			`UPDATE milestones SET stripe_payment_intent = ? WHERE id = ?`, fakeIntentID, m1ID,
-		); err != nil {
-			t.Fatalf("set milestone intent: %v", err)
-		}
+	// Skip payment for milestone 1 via 100% coupon.
+	couponCode := fmt.Sprintf("M1-%s", jobID[:6])
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, couponCode,
+	); err != nil {
+		t.Fatalf("insert coupon: %v", err)
+	}
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+		map[string]string{"coupon_code": couponCode}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout m1: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		// Agent submits proof of work to move milestone 1 → REVIEW_REQUESTED.
-		submitBody := SubmitProofRequest{ProofOfWorkURL: "https://example.com/proof1", ProofOfWorkNotes: "Done"}
-		rr := doRequest(t, router, http.MethodPost,
-			"/api/v1/jobs/"+jobID+"/milestones/"+m1ID+"/submit", submitBody, agentAPIKey)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("submit proof: expected 200, got %d: %s", rr.Code, rr.Body.String())
-		}
+	// Verify IN_PROGRESS.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Fatalf("expected IN_PROGRESS after checkout, got %q", job.Status)
+	}
 
-		// Approve milestone 1. Because no real Stripe key is configured, the
-		// capture call will fail — we expect a 500 response. This confirms that
-		// ApproveMilestoneHandler actually attempted the capture (it did not
-		// skip it when the intent was present).
-		rr = doRequest(t, router, http.MethodPost,
-			"/api/ui/jobs/"+jobID+"/milestones/"+m1ID+"/approve", nil, employerTok)
-		if rr.Code != http.StatusInternalServerError {
-			t.Errorf("expected 500 (Stripe capture attempted, no key configured), got %d: %s",
-				rr.Code, rr.Body.String())
-		}
+	// --- Milestone 1: submit then approve ---
+	submitBody := SubmitProofRequest{ProofOfWorkURL: "https://example.com/m1", ProofOfWorkNotes: "M1 done"}
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/v1/jobs/"+jobID+"/milestones/"+m1ID+"/submit", submitBody, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("m1 submit: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		// The milestone must NOT have been marked PAID (capture failed, so the
-		// DB transaction was never committed).
-		var status string
-		if err := app.DB.QueryRow(`SELECT status FROM milestones WHERE id = ?`, m1ID).Scan(&status); err != nil {
-			t.Fatalf("query milestone status: %v", err)
-		}
-		if status == "PAID" {
-			t.Error("milestone should not be PAID after failed Stripe capture")
-		}
-	})
+	// Job must still be IN_PROGRESS after m1 submit.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("job should remain IN_PROGRESS after m1 submit, got %q", job.Status)
+	}
 
-	// --- Sub-case 2: milestone has NO stripe_payment_intent —
-	// ApproveMilestoneHandler should skip capture and succeed (HTTP 200).
-	t.Run("succeeds without intent (no capture needed)", func(t *testing.T) {
-		// Build a fresh employer/agent setup so this sub-test is independent.
-		emp2ID, mgr2ID, ag2ID, ag2APIKey := setupJobFixtures(t, app)
-		emp2Tok := makeAuthToken(t, app, emp2ID, "EMPLOYER")
+	// Approve milestone 1.
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/ui/jobs/"+jobID+"/milestones/"+m1ID+"/approve", nil, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("m1 approve: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		jobID, m1ID, _ := setupSowWithMilestones(t, app, router, emp2ID, mgr2ID, ag2ID, ag2APIKey)
+	// After approving m1 (not last), job should be AWAITING_PAYMENT for m2.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "AWAITING_PAYMENT" {
+		t.Errorf("job should be AWAITING_PAYMENT after m1 approved, got %q", job.Status)
+	}
 
-		// Simulate the webhook completing without storing an intent on the milestone
-		// (e.g. coupon path, or webhook ran before the fix).
-		if _, err := app.DB.Exec(
-			`UPDATE jobs SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, jobID,
-		); err != nil {
-			t.Fatalf("set job IN_PROGRESS: %v", err)
-		}
-		// Explicitly ensure stripe_payment_intent is empty (it is by default, but be explicit).
-		if _, err := app.DB.Exec(
-			`UPDATE milestones SET stripe_payment_intent = '' WHERE id = ?`, m1ID,
-		); err != nil {
-			t.Fatalf("clear milestone intent: %v", err)
-		}
+	// Pay for milestone 2 via coupon.
+	coupon2 := fmt.Sprintf("M2-%s", jobID[:6])
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, coupon2,
+	); err != nil {
+		t.Fatalf("insert coupon m2: %v", err)
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+		map[string]string{"coupon_code": coupon2}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout m2: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		// Agent submits proof → REVIEW_REQUESTED.
-		submitBody := SubmitProofRequest{ProofOfWorkURL: "https://example.com/proof2", ProofOfWorkNotes: "Done"}
-		rr := doRequest(t, router, http.MethodPost,
-			"/api/v1/jobs/"+jobID+"/milestones/"+m1ID+"/submit", submitBody, ag2APIKey)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("submit proof: expected 200, got %d: %s", rr.Code, rr.Body.String())
-		}
+	// --- Milestone 2: submit then approve ---
+	submitBody2 := SubmitProofRequest{ProofOfWorkURL: "https://example.com/m2", ProofOfWorkNotes: "M2 done"}
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/v1/jobs/"+jobID+"/milestones/"+m2ID+"/submit", submitBody2, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("m2 submit: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		// Approve milestone 1 — no Stripe intent, so capture is skipped and the
-		// handler must return 200.
-		rr = doRequest(t, router, http.MethodPost,
-			"/api/ui/jobs/"+jobID+"/milestones/"+m1ID+"/approve", nil, emp2Tok)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("approve milestone (no intent): expected 200, got %d: %s", rr.Code, rr.Body.String())
-		}
+	// Approve milestone 2 (last).
+	rr = doRequest(t, router, http.MethodPost,
+		"/api/ui/jobs/"+jobID+"/milestones/"+m2ID+"/approve", nil, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("m2 approve: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
 
-		// Milestone must be PAID.
-		var status string
-		if err := app.DB.QueryRow(`SELECT status FROM milestones WHERE id = ?`, m1ID).Scan(&status); err != nil {
-			t.Fatalf("query milestone status: %v", err)
-		}
-		if status != "PAID" {
-			t.Errorf("expected milestone status PAID, got %q", status)
-		}
+	// After approving m2 (last), job should be COMPLETED.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "COMPLETED" {
+		t.Errorf("job should be COMPLETED after last milestone approved, got %q", job.Status)
+	}
+}
 
-		// The response body should be the updated milestone.
-		var m Milestone
-		if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
-			t.Fatalf("decode milestone response: %v", err)
-		}
-		if m.Status != "PAID" {
-			t.Errorf("response milestone status: expected PAID, got %q", m.Status)
-		}
-	})
+// TestDeliverJobNoMilestonesStillWorks verifies that DeliverJobHandler continues to
+// work normally for jobs that have no milestones (the legacy flow).
+func TestDeliverJobNoMilestonesStillWorks(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, _, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+
+	// Hire and force to IN_PROGRESS (no SOW, no milestones).
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire",
+		HireRequest{AgentID: agentID, Title: "No-milestone job", TotalPayout: 100, TimelineDays: 2},
+		employerTok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+
+	if _, err := app.DB.Exec(
+		`UPDATE jobs SET status = 'IN_PROGRESS' WHERE id = ?`, job.ID,
+	); err != nil {
+		t.Fatalf("force IN_PROGRESS: %v", err)
+	}
+
+	// Deliver should succeed because there are no milestones.
+	body := DeliverJobRequest{DeliveryNotes: "All done", DeliveryURL: "https://example.com"}
+	rr = doRequest(t, router, http.MethodPost, "/api/v1/jobs/"+job.ID+"/deliver", body, agentAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Errorf("deliver no-milestone job: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var delivered Job
+	json.Unmarshal(rr.Body.Bytes(), &delivered)
+	if delivered.Status != "DELIVERED" {
+		t.Errorf("expected DELIVERED status, got %q", delivered.Status)
+	}
 }

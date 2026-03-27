@@ -178,17 +178,12 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If the coupon covers the full amount, skip Stripe entirely.
 	if chargeAmountCents <= 0 {
-		// If paying for a specific milestone, mark it PAID first.
-		if currentMilestoneID != "" {
-			if _, dbErr := app.DB.Exec(
-				`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-				currentMilestoneID,
-			); dbErr != nil {
-				log.Error("checkout: failed to mark milestone PAID after full coupon", "milestone_id", currentMilestoneID, "error", dbErr)
-				writeError(w, http.StatusInternalServerError, "database error")
-				return
-			}
-		}
+		// Do NOT mark the milestone PAID here. Payment being captured only means
+		// the employer has funded this milestone phase; the milestone stays PENDING
+		// so the agent can submit deliverables via SubmitMilestoneHandler, which
+		// moves it to REVIEW_REQUESTED. The PAID status is set only after the
+		// employer approves the delivered work via ApproveMilestoneHandler.
+		//
 		// Mark job as IN_PROGRESS directly.
 		_, dbErr := app.DB.Exec(
 			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
