@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
@@ -84,6 +84,12 @@
 	let saveError = $state('');
 	let successMsg = $state('');
 
+	// Lock state
+	let lockDenied = $state(false);
+	let lockDeniedBy = $state('');
+	let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+	let lockHeld = $state(false);
+
 	// SoW form fields
 	let editDetailedSpec = $state('');
 	let editWorkProcess = $state('');
@@ -103,7 +109,48 @@
 			return;
 		}
 		await loadJob();
+		await acquireLock();
 	});
+
+	onDestroy(() => {
+		if (heartbeatInterval !== null) {
+			clearInterval(heartbeatInterval);
+			heartbeatInterval = null;
+		}
+		if (lockHeld) {
+			apiFetch(`/api/ui/jobs/${jobId}/sow/unlock`, { method: 'POST' }).catch(() => {});
+		}
+	});
+
+	async function acquireLock() {
+		// Only attempt to lock if the SoW exists (pre-fill edits on jobs with no SoW yet
+		// don't need locking because only the employer can access this page at that stage).
+		if (!job?.sow) return;
+
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/sow/lock`, { method: 'POST' });
+			if (res.status === 409) {
+				const data = await res.json().catch(() => ({}));
+				lockDenied = true;
+				lockDeniedBy = data.editing_by ?? 'another user';
+				return;
+			}
+			if (res.ok) {
+				lockHeld = true;
+				heartbeatInterval = setInterval(async () => {
+					await apiFetch(`/api/ui/jobs/${jobId}/sow/heartbeat`, { method: 'POST' }).catch(() => {});
+				}, 60_000);
+			}
+		} catch {
+			// Non-fatal — proceed without lock on network error
+		}
+	}
+
+	function handleBeforeUnload() {
+		if (lockHeld) {
+			navigator.sendBeacon(`/api/ui/jobs/${jobId}/sow/unlock`);
+		}
+	}
 
 	async function loadJob() {
 		try {
@@ -221,6 +268,14 @@
 				const err = await res.json().catch(() => ({ error: 'Failed to save SoW' }));
 				throw new Error(err.error || 'Failed to save SoW');
 			}
+
+			// Stop heartbeat — lock is cleared by the save endpoint
+			if (heartbeatInterval !== null) {
+				clearInterval(heartbeatInterval);
+				heartbeatInterval = null;
+			}
+			lockHeld = false;
+
 			successMsg = 'Statement of Work saved.';
 			goto(`/jobs/${jobId}`);
 		} catch (e: unknown) {
@@ -234,6 +289,8 @@
 <svelte:head>
 	<title>Edit Statement of Work — {SITE_NAME}</title>
 </svelte:head>
+
+<svelte:window onbeforeunload={handleBeforeUnload} />
 
 <div class="container page">
 	{#if loading}
@@ -280,6 +337,11 @@
 			</div>
 		</div>
 
+		{#if lockDenied}
+			<div class="alert alert-error" style="margin-bottom: 1rem;">
+				This SoW is currently being edited by <strong>{lockDeniedBy}</strong>. Please wait until they finish or try again in a few minutes.
+			</div>
+		{/if}
 		{#if saveError}
 			<div class="alert alert-error">{saveError}</div>
 		{/if}
@@ -403,10 +465,23 @@
 			</div>
 
 			<div style="display: flex; gap: 0.75rem; align-items: center;">
-				<button type="submit" class="btn btn-primary" disabled={saving}>
+				<button type="submit" class="btn btn-primary" disabled={saving || lockDenied}>
 					{saving ? 'Saving…' : 'Save SoW'}
 				</button>
-				<a href="/jobs/{jobId}" class="btn btn-secondary">Cancel</a>
+				<a
+					href="/jobs/{jobId}"
+					class="btn btn-secondary"
+					onclick={async () => {
+						if (heartbeatInterval !== null) {
+							clearInterval(heartbeatInterval);
+							heartbeatInterval = null;
+						}
+						if (lockHeld) {
+							lockHeld = false;
+							await apiFetch(`/api/ui/jobs/${jobId}/sow/unlock`, { method: 'POST' }).catch(() => {});
+						}
+					}}
+				>Cancel</a>
 			</div>
 		</form>
 	{/if}
