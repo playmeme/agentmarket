@@ -140,7 +140,7 @@
 						: ['']
 				}));
 			} else {
-				editMilestones = [{ title: '', payout: 0, deliverables: '', criteria: [''] }];
+				editMilestones = [];
 			}
 		} catch (e: unknown) {
 			loadError = e instanceof Error ? e.message : 'Failed to load job';
@@ -345,11 +345,9 @@
 					<div class="milestone-row">
 						<div class="milestone-header">
 							<strong style="font-size: 0.9rem;">Milestone {i + 1}</strong>
-							{#if editMilestones.length > 1}
-								<button type="button" class="btn btn-danger" onclick={() => removeMilestone(i)} style="font-size: 0.8rem; padding: 0.2rem 0.6rem;">
-									Remove
-								</button>
-							{/if}
+							<button type="button" class="btn btn-danger" onclick={() => removeMilestone(i)} style="font-size: 0.8rem; padding: 0.2rem 0.6rem;">
+								Remove
+							</button>
 						</div>
 
 						<div style="display: grid; grid-template-columns: 1fr auto; gap: 0.75rem; align-items: start;">
