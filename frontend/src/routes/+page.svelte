@@ -14,21 +14,75 @@
 		success_rate: number;
 	}
 
+	interface ActivityEvent {
+		kind: 'job_offered' | 'agent_hired' | 'job_completed';
+		job_id?: string;
+		job_title?: string;
+		agent_id?: string;
+		agent_name?: string;
+		occurred_at: string;
+	}
+
 	let agents: Agent[] = $state([]);
+	let activity: ActivityEvent[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
+	let activityLoading = $state(true);
+	let activityError = $state('');
 
 	onMount(async () => {
-		try {
-			const res = await fetch('/api/ui/agents');
-			if (!res.ok) throw new Error('Failed to load agents');
-			agents = await res.json();
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to load agents';
-		} finally {
-			loading = false;
+		const [agentsRes, activityRes] = await Promise.allSettled([
+			fetch('/api/ui/agents'),
+			fetch('/api/ui/activity')
+		]);
+
+		if (agentsRes.status === 'fulfilled' && agentsRes.value.ok) {
+			agents = await agentsRes.value.json();
+		} else {
+			error = 'Failed to load agents';
 		}
+		loading = false;
+
+		if (activityRes.status === 'fulfilled' && activityRes.value.ok) {
+			activity = await activityRes.value.json();
+		} else {
+			activityError = 'Failed to load activity';
+		}
+		activityLoading = false;
 	});
+
+	function formatEventLabel(event: ActivityEvent): string {
+		switch (event.kind) {
+			case 'job_offered':
+				return `Job posted: "${event.job_title}"`;
+			case 'agent_hired':
+				return `${event.agent_name} was hired`;
+			case 'job_completed':
+				return `${event.agent_name} completed "${event.job_title}"`;
+			default:
+				return 'Activity';
+		}
+	}
+
+	function formatRelativeTime(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		const minutes = Math.floor(diff / 60_000);
+		if (minutes < 1) return 'just now';
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		const days = Math.floor(hours / 24);
+		return `${days}d ago`;
+	}
+
+	function eventIcon(kind: ActivityEvent['kind']): string {
+		switch (kind) {
+			case 'job_offered': return '📋';
+			case 'agent_hired': return '🤝';
+			case 'job_completed': return '✅';
+			default: return '•';
+		}
+	}
 </script>
 
 <svelte:head>
@@ -50,6 +104,28 @@
 				<a href="/auth/signup" class="btn btn-primary">Get started</a>
 				<a href="/auth/login" class="btn btn-secondary">Log in</a>
 			</div>
+		</div>
+	{/if}
+
+	<!-- Recent Activity Feed -->
+	{#if !activityLoading && (activityError || activity.length > 0)}
+		<div style="margin-bottom: 2rem;">
+			<h2 style="margin: 0 0 0.75rem; font-size: 1.05rem; color: #555; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;">
+				Recent Activity
+			</h2>
+			{#if activityError}
+				<p style="color: #888; font-size: 0.9rem;">{activityError}</p>
+			{:else}
+				<div style="border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden;">
+					{#each activity as event, i}
+						<div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: {i % 2 === 0 ? '#fff' : '#fafafa'}; border-bottom: {i < activity.length - 1 ? '1px solid #f0f0f0' : 'none'};">
+							<span style="font-size: 1rem; flex-shrink: 0;">{eventIcon(event.kind)}</span>
+							<span style="flex: 1; font-size: 0.9rem; color: #333;">{formatEventLabel(event)}</span>
+							<span style="font-size: 0.78rem; color: #aaa; white-space: nowrap;">{formatRelativeTime(event.occurred_at)}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/if}
 

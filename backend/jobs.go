@@ -54,6 +54,8 @@ type Job struct {
 	TimelineDays        int         `json:"timeline_days"`
 	SowLink             string      `json:"sow_link,omitempty"`
 	StripePaymentIntent string      `json:"stripe_payment_intent,omitempty"`
+	TipCents            int64       `json:"tip_cents"`
+	IsPublic            bool        `json:"is_public"`
 	CreatedAt           time.Time   `json:"created_at"`
 	UpdatedAt           time.Time   `json:"updated_at"`
 	Milestones          []Milestone `json:"milestones,omitempty"`
@@ -76,6 +78,7 @@ type HireRequest struct {
 	TotalPayout  int64            `json:"total_payout"`
 	TimelineDays int              `json:"timeline_days"`
 	SowLink      string           `json:"sow_link"`
+	IsPublic     bool             `json:"is_public"`
 	Milestones   []MilestoneInput `json:"milestones"`
 }
 
@@ -159,8 +162,9 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
 	var agentID, sowLink, stripe sql.NullString
+	var isPublic int
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt})
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt})
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -170,6 +174,7 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
+	j.IsPublic = isPublic == 1
 	return j, err
 }
 
@@ -177,8 +182,9 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Job, error) {
 	var j Job
 	var agentID, sowLink, stripe sql.NullString
+	var isPublic int
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt}, &j.AgentName)
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt}, &j.AgentName)
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -188,6 +194,7 @@ func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Jo
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
+	j.IsPublic = isPublic == 1
 	return j, err
 }
 
@@ -268,9 +275,9 @@ func (app *App) HireAgentHandler(w http.ResponseWriter, r *http.Request) {
 
 	jobID := uuid.New().String()
 	_, err = tx.Exec(
-		`INSERT INTO jobs (id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		jobID, employerID, agentIDVal, initialStatus, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink,
+		`INSERT INTO jobs (id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, is_public)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		jobID, employerID, agentIDVal, initialStatus, req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink, req.IsPublic,
 	)
 	if err != nil {
 		log.Error("job creation failed: insert error", "employer_id", employerID, "agent_id", req.AgentID, "error", err)
@@ -378,8 +385,8 @@ func (app *App) UpdateJobHandler(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`UPDATE jobs SET title = ?, description = ?, total_payout = ?, timeline_days = ?, sow_link = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink, jobID,
+		`UPDATE jobs SET title = ?, description = ?, total_payout = ?, timeline_days = ?, sow_link = ?, is_public = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		req.Title, req.Description, req.TotalPayout, req.TimelineDays, req.SowLink, req.IsPublic, jobID,
 	)
 	if err != nil {
 		log.Error("update job: update error", "job_id", jobID, "error", err)
@@ -518,7 +525,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if role == "EMPLOYER" {
 		// JOIN agents so we can return the agent name alongside agent_id
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 LEFT JOIN agents a ON j.agent_id = a.id
 			 WHERE j.employer_id = ?
@@ -528,7 +535,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// AGENT_MANAGER: list jobs for any of their agents
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
 			 WHERE a.manager_id = ?
@@ -561,7 +568,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) getJobDetail(jobID string) (Job, error) {
 	row := app.DB.QueryRow(
-		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.created_at, j.updated_at, COALESCE(a.name, '')
+		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 		 FROM jobs j
 		 LEFT JOIN agents a ON j.agent_id = a.id
 		 WHERE j.id = ?`,
@@ -800,7 +807,7 @@ func (app *App) GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 
 	rows, err := app.DB.Query(
-		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, stripe_payment_intent, created_at, updated_at
+		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, stripe_payment_intent, tip_cents, is_public, created_at, updated_at
 		 FROM jobs WHERE agent_id = ? AND status = 'PENDING_ACCEPTANCE' ORDER BY created_at DESC`,
 		agentID,
 	)
