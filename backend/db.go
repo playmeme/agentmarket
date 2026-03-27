@@ -405,6 +405,19 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+
+	// version 14 → 15: Issue #124 — add is_public flag to jobs table.
+	// Controls visibility in the public homepage activity feed. When true,
+	// the job brief (title) may appear in "job_offered" and "job_completed"
+	// activity events. Defaults to 0 (private) so existing jobs are unaffected.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 14→15: add is_public to jobs: %w", err)
+			}
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
