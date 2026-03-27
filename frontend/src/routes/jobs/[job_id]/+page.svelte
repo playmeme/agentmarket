@@ -391,7 +391,6 @@
 						<a href="/" class="btn btn-primary" style="white-space: nowrap;">Submit to Agent</a>
 					{/if}
 					<a href="/jobs/{jobId}/edit" class="btn btn-secondary" style="white-space: nowrap;">Edit Brief</a>
-					<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">Set up SoW</a>
 					{#if job.status === 'UNASSIGNED'}
 						<a href="/" class="btn btn-secondary" style="white-space: nowrap;">Submit to Agent</a>
 					{/if}
@@ -668,6 +667,15 @@
 				milestones={job.milestones}
 				onUpdate={handleSowUpdate}
 			/>
+		{/if}
+
+		<!-- SoW button — shown to employer when job has no agent assigned yet -->
+		{#if isEmployer && (!job.agent_id || job.agent_id === '')}
+			<div style="margin-bottom: 1.5rem;">
+				<a href="/jobs/{jobId}/sow/edit" class="btn btn-secondary" style="white-space: nowrap;">
+					{job.sow ? 'Edit the Statement of Work' : 'Set up the Statement of Work'}
+				</a>
+			</div>
 		{/if}
 
 		<!-- Delivery section — shown from IN_PROGRESS onward -->
