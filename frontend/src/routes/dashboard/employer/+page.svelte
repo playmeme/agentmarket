@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { apiFetch, isAuthenticated, auth } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
 	import { SITE_NAME } from '$lib/config';
 	import NotificationBar from '$lib/components/NotificationBar.svelte';
+	import { notificationTick } from '$lib/stores/notifications';
 
 	interface Milestone {
 		id: string;
@@ -50,6 +51,16 @@
 	let error = $state('');
 	let retractingJobId = $state<string | null>(null);
 	let retractError = $state('');
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let initialized = $state(false);
+
+	// Re-fetch notifications immediately when the layout detects new unread ones
+	$effect(() => {
+		// Subscribe to tick; skip the initial value (0) before data is loaded
+		if ($notificationTick > 0 && initialized) {
+			fetchNotifications();
+		}
+	});
 
 	function statusBadge(status: string): string {
 		const map: Record<string, string> = {
@@ -77,6 +88,22 @@
 
 	function handleDismiss(id: string) {
 		notifications = notifications.filter((n) => n.id !== id);
+	}
+
+	async function fetchNotifications() {
+		try {
+			const res = await apiFetch('/api/ui/notifications');
+			if (res.ok) {
+				const fresh: Notification[] = await res.json();
+				// Preserve locally-dismissed notifications so they don't reappear mid-session
+				const dismissedIds = new Set(
+					notifications.filter((n) => n.dismissed).map((n) => n.id)
+				);
+				notifications = fresh.filter((n) => !dismissedIds.has(n.id));
+			}
+		} catch {
+			// best effort — polling failures are non-fatal
+		}
 	}
 
 	async function retractOffer(jobId: string) {
@@ -120,7 +147,15 @@
 			error = e instanceof Error ? e.message : 'Failed to load jobs';
 		} finally {
 			loading = false;
+			initialized = true;
 		}
+
+		// Poll for new notifications every 30 seconds so the banner appears without a page reload
+		pollInterval = setInterval(fetchNotifications, 30_000);
+	});
+
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
 	});
 </script>
 
