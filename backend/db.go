@@ -374,6 +374,24 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+
+	// version 12 → 13: Issue #119 — add editing_id and editing_updated_at to sow table.
+	// These columns implement a mutex/lock system to prevent concurrent edit conflicts.
+	// editing_id holds the user ID of whoever currently holds the edit lock (NULL = unlocked).
+	// editing_updated_at is refreshed via a heartbeat so stale locks (>10 min) are auto-expired.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE sow ADD COLUMN editing_id TEXT`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 12→13: add editing_id to sow: %w", err)
+			}
+		}
+		if _, err := tx.Exec(`ALTER TABLE sow ADD COLUMN editing_updated_at DATETIME`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 12→13: add editing_updated_at to sow: %w", err)
+			}
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw

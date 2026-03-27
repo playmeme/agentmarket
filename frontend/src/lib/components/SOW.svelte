@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { apiFetch, auth } from '$lib/stores/auth';
 
 	// Stepped auto-resize for textareas
@@ -73,6 +74,31 @@
 	let error = $state('');
 	let successMsg = $state('');
 
+	// Lock state
+	let lockLoading = $state(false);
+	let lockDenied = $state(false);
+	let lockDeniedBy = $state('');
+	let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+	// Release lock when the component is destroyed (e.g. navigation away)
+	onDestroy(() => {
+		if (heartbeatInterval !== null) {
+			clearInterval(heartbeatInterval);
+			heartbeatInterval = null;
+		}
+		if (editing) {
+			// Best-effort unlock — fire and forget
+			apiFetch(`/api/ui/jobs/${jobId}/sow/unlock`, { method: 'POST' }).catch(() => {});
+		}
+	});
+
+	// Also release on page unload (tab close / hard navigation)
+	function handleBeforeUnload() {
+		if (editing) {
+			navigator.sendBeacon(`/api/ui/jobs/${jobId}/sow/unlock`);
+		}
+	}
+
 	// Edit form state — SoW fields
 	let editDetailedSpec = $state('');
 	let editWorkProcess = $state('');
@@ -92,7 +118,32 @@
 		return (cents / 100).toFixed(2);
 	}
 
-	function startEdit() {
+	async function startEdit() {
+		lockLoading = true;
+		lockDenied = false;
+		lockDeniedBy = '';
+		error = '';
+
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${jobId}/sow/lock`, { method: 'POST' });
+			if (res.status === 409) {
+				const data = await res.json().catch(() => ({}));
+				lockDenied = true;
+				lockDeniedBy = data.editing_by ?? 'another user';
+				return;
+			}
+			if (!res.ok) {
+				error = 'Failed to acquire edit lock. Please try again.';
+				return;
+			}
+		} catch {
+			error = 'Failed to acquire edit lock. Please try again.';
+			return;
+		} finally {
+			lockLoading = false;
+		}
+
+		// Lock acquired — populate form fields
 		if (sow) {
 			editDetailedSpec = sow.detailed_spec;
 			editWorkProcess = sow.work_process;
@@ -118,11 +169,23 @@
 			editMilestones = [];
 		}
 		editing = true;
-		error = '';
+
+		// Start heartbeat to keep the lock alive
+		heartbeatInterval = setInterval(async () => {
+			await apiFetch(`/api/ui/jobs/${jobId}/sow/heartbeat`, { method: 'POST' }).catch(() => {});
+		}, 60_000);
 	}
 
-	function cancelEdit() {
+	async function cancelEdit() {
+		// Stop heartbeat and release lock
+		if (heartbeatInterval !== null) {
+			clearInterval(heartbeatInterval);
+			heartbeatInterval = null;
+		}
+		await apiFetch(`/api/ui/jobs/${jobId}/sow/unlock`, { method: 'POST' }).catch(() => {});
 		editing = false;
+		lockDenied = false;
+		lockDeniedBy = '';
 		error = '';
 	}
 
@@ -201,6 +264,13 @@
 				const err = await res.json().catch(() => ({ error: 'Failed to save SoW' }));
 				throw new Error(err.error || 'Failed to save SoW');
 			}
+
+			// Stop heartbeat — lock is cleared by the save endpoint
+			if (heartbeatInterval !== null) {
+				clearInterval(heartbeatInterval);
+				heartbeatInterval = null;
+			}
+
 			sow = await res.json();
 			editing = false;
 			successMsg = 'Statement of Work saved.';
@@ -269,6 +339,8 @@
 	const bothAccepted = $derived(sow && sow.employer_accepted && sow.agent_accepted);
 </script>
 
+<svelte:window onbeforeunload={handleBeforeUnload} />
+
 <!-- Job section (read-only summary) -->
 {#if jobSummary}
 <div class="card" style="margin-bottom: 1.5rem;">
@@ -299,12 +371,17 @@
 	<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
 		<h2 style="margin: 0; font-size: 1.1rem;">Statement of Work</h2>
 		{#if !editing && jobStatus === 'SOW_NEGOTIATION'}
-			<button class="btn btn-secondary" onclick={startEdit} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
-				{sow ? 'Edit SoW' : 'Create SoW'}
+			<button class="btn btn-secondary" onclick={startEdit} disabled={lockLoading} style="font-size: 0.85rem; padding: 0.35rem 0.9rem;">
+				{lockLoading ? 'Checking…' : (sow ? 'Edit SoW' : 'Create SoW')}
 			</button>
 		{/if}
 	</div>
 
+	{#if lockDenied}
+		<div class="alert alert-error" style="margin-bottom: 1rem;">
+			This SoW is currently being edited by <strong>{lockDeniedBy}</strong>. Please wait until they finish or try again in a few minutes.
+		</div>
+	{/if}
 	{#if error}
 		<div class="alert alert-error">{error}</div>
 	{/if}

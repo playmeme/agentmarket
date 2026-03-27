@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -23,6 +24,7 @@ type SOW struct {
 	AgentAccepted    bool   `json:"agent_accepted"`
 	EmployerAccepted bool   `json:"employer_accepted"`
 	LastEditedBy     string `json:"last_edited_by,omitempty"`
+	EditingID        string `json:"editing_id,omitempty"`
 	CreatedAt        string `json:"created_at"`
 	UpdatedAt        string `json:"updated_at"`
 }
@@ -49,13 +51,13 @@ type SOWRequest struct {
 func (app *App) getSOWByJobID(jobID string) (SOW, error) {
 	var s SOW
 	var agentAccepted, employerAccepted int
-	var lastEditedBy sql.NullString
+	var lastEditedBy, editingID sql.NullString
 	err := app.DB.QueryRow(
-		`SELECT id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by, created_at, updated_at
+		`SELECT id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted, last_edited_by, editing_id, created_at, updated_at
 		 FROM sow WHERE job_id = ?`,
 		jobID,
 	).Scan(&s.ID, &s.JobID, &s.DetailedSpec, &s.WorkProcess, &s.PriceCents, &s.TimelineDays,
-		&agentAccepted, &employerAccepted, &lastEditedBy, &s.CreatedAt, &s.UpdatedAt)
+		&agentAccepted, &employerAccepted, &lastEditedBy, &editingID, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return s, err
 	}
@@ -63,6 +65,9 @@ func (app *App) getSOWByJobID(jobID string) (SOW, error) {
 	s.EmployerAccepted = employerAccepted == 1
 	if lastEditedBy.Valid {
 		s.LastEditedBy = lastEditedBy.String
+	}
+	if editingID.Valid {
+		s.EditingID = editingID.String
 	}
 	return s, nil
 }
@@ -193,10 +198,11 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	} else {
-		// Update existing SOW — reset both acceptance flags
+		// Update existing SOW — reset both acceptance flags and clear the edit lock
 		_, err = app.DB.Exec(
 			`UPDATE sow SET detailed_spec = ?, work_process = ?, price_cents = ?, timeline_days = ?,
-			 agent_accepted = 0, employer_accepted = 0, last_edited_by = ?, updated_at = CURRENT_TIMESTAMP
+			 agent_accepted = 0, employer_accepted = 0, last_edited_by = ?,
+			 editing_id = NULL, editing_updated_at = NULL, updated_at = CURRENT_TIMESTAMP
 			 WHERE job_id = ?`,
 			req.DetailedSpec, req.WorkProcess, req.PriceCents, req.TimelineDays, userID, jobID,
 		)
@@ -432,4 +438,177 @@ func (app *App) AcceptSOW(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sow)
+}
+
+// lockStaleMinutes is how long an edit lock can sit without a heartbeat before
+// it is considered stale and another user may take it.
+const lockStaleMinutes = 10
+
+// LockSOW acquires an edit lock on the SoW for the current user.
+// Called when a user enters the Edit SoW screen.
+//
+// Rules:
+//   - If editing_id is NULL/blank → grant the lock immediately.
+//   - If editing_id equals current user → refresh the lock (idempotent re-entry).
+//   - If editing_updated_at is older than lockStaleMinutes → stale; override it.
+//   - Otherwise → return 409 with the name of the user currently editing.
+//
+// Response: { "allowed": true/false, "editing_by": "<handle or name>" }
+func (app *App) LockSOW(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "lock_sow")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	// Verify caller is a participant
+	ok, err := app.isJobParticipant(jobID, userID)
+	if err != nil {
+		log.Error("lock sow: db error checking participant", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "not authorized to edit this SOW")
+		return
+	}
+
+	// Read current lock state
+	var editingID sql.NullString
+	var editingUpdatedAt sql.NullString
+	err = app.DB.QueryRow(
+		`SELECT editing_id, editing_updated_at FROM sow WHERE job_id = ?`, jobID,
+	).Scan(&editingID, &editingUpdatedAt)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "SOW not found for this job")
+		return
+	}
+	if err != nil {
+		log.Error("lock sow: db error reading lock", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	now := time.Now().UTC()
+
+	// Determine whether we can grant the lock
+	lockedByOther := false
+	var lockedByName string
+
+	if editingID.Valid && editingID.String != "" && editingID.String != userID {
+		// Someone else holds the lock — check if it's stale
+		stale := true
+		if editingUpdatedAt.Valid && editingUpdatedAt.String != "" {
+			for _, layout := range sqliteTimeFormats {
+				if t, parseErr := time.Parse(layout, editingUpdatedAt.String); parseErr == nil {
+					if now.Sub(t) < lockStaleMinutes*time.Minute {
+						stale = false
+					}
+					break
+				}
+			}
+		}
+
+		if !stale {
+			lockedByOther = true
+			// Look up the editor's name/handle for the conflict message
+			var name, handle string
+			if scanErr := app.DB.QueryRow(
+				`SELECT name, handle FROM users WHERE id = ?`, editingID.String,
+			).Scan(&name, &handle); scanErr == nil {
+				if handle != "" {
+					lockedByName = handle
+				} else {
+					lockedByName = name
+				}
+			} else {
+				lockedByName = "another user"
+			}
+		}
+	}
+
+	if lockedByOther {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"allowed":    false,
+			"editing_by": lockedByName,
+		})
+		return
+	}
+
+	// Grant the lock (or refresh it for the same user)
+	_, err = app.DB.Exec(
+		`UPDATE sow SET editing_id = ?, editing_updated_at = CURRENT_TIMESTAMP WHERE job_id = ?`,
+		userID, jobID,
+	)
+	if err != nil {
+		log.Error("lock sow: db error setting lock", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("SOW lock granted", "job_id", jobID, "user_id", userID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"allowed":    true,
+		"editing_by": userID,
+	})
+}
+
+// HeartbeatSOW refreshes the edit lock timestamp so it doesn't expire.
+// Should be called every ~60 seconds by the client while editing.
+// Only succeeds if the caller currently holds the lock.
+func (app *App) HeartbeatSOW(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "heartbeat_sow")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	result, err := app.DB.Exec(
+		`UPDATE sow SET editing_updated_at = CURRENT_TIMESTAMP WHERE job_id = ? AND editing_id = ?`,
+		jobID, userID,
+	)
+	if err != nil {
+		log.Error("heartbeat sow: db error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		// Either SOW not found or caller doesn't hold the lock — return 409
+		writeError(w, http.StatusConflict, "lock not held by current user")
+		return
+	}
+
+	log.Info("SOW lock heartbeat", "job_id", jobID, "user_id", userID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// UnlockSOW releases the edit lock for the current user.
+// Called on save, cancel, or page unload (beforeunload).
+// Silently succeeds even if the caller doesn't hold the lock.
+func (app *App) UnlockSOW(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "unlock_sow")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+
+	// Only clear the lock if the caller owns it (don't steal another user's lock)
+	_, err := app.DB.Exec(
+		`UPDATE sow SET editing_id = NULL, editing_updated_at = NULL WHERE job_id = ? AND editing_id = ?`,
+		jobID, userID,
+	)
+	if err != nil {
+		log.Error("unlock sow: db error", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("SOW lock released", "job_id", jobID, "user_id", userID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
