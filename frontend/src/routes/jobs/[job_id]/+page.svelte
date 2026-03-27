@@ -88,6 +88,7 @@
 	let couponDiscountCents = $state(0);
 	let couponFinalCents = $state(0);
 	let couponApplied = $state(false);
+	let tipAmount = $state(''); // dollars, free-text input; empty = no tip
 	let retractLoading = $state(false);
 	let retractError = $state('');
 	let deleting = $state(false);
@@ -216,13 +217,23 @@
 		}
 	}
 
+	// Parsed tip in cents (0 if empty or invalid).
+	const tipCents = $derived(() => {
+		const v = parseFloat(tipAmount);
+		return isNaN(v) || v < 0 ? 0 : Math.round(v * 100);
+	});
+
 	async function handleCheckout() {
 		checkoutLoading = true;
 		checkoutError = '';
 		try {
-			const body: Record<string, string> = {};
+			const body: Record<string, string | number> = {};
 			if (couponApplied && couponCode.trim()) {
 				body.coupon_code = couponCode.trim();
+			}
+			const tip = tipCents();
+			if (tip > 0) {
+				body.tip_amount = tip / 100; // backend expects dollars
 			}
 			const res = await apiFetch(`/api/ui/jobs/${jobId}/checkout`, {
 				method: 'POST',
@@ -237,8 +248,8 @@
 			if (data.paid) {
 				// Coupon covered the full amount — reload job to show IN_PROGRESS.
 				await loadJob();
-			} else if (data.checkout_url) {
-				window.location.href = data.checkout_url;
+			} else if (data.url) {
+				window.location.href = data.url;
 			} else {
 				throw new Error('No checkout URL returned');
 			}
@@ -651,20 +662,50 @@
 					{/if}
 				</div>
 
+				<!-- Tip field -->
+				<div style="margin-bottom: 1rem;">
+					<label for="tip-amount" style="display: block; font-size: 0.85rem; font-weight: 600; color: #555; margin-bottom: 0.35rem;">
+						Add a tip (optional)
+					</label>
+					<div style="display: flex; align-items: center; gap: 0.4rem;">
+						<span style="font-size: 0.9rem; color: #888;">$</span>
+						<input
+							id="tip-amount"
+							type="number"
+							min="0"
+							step="0.01"
+							placeholder="0.00"
+							bind:value={tipAmount}
+							style="width: 120px;"
+							disabled={checkoutLoading}
+						/>
+					</div>
+					{#if tipCents() > 0}
+						<p style="margin: 0.35rem 0 0; font-size: 0.85rem; color: #555;">
+							Tip: +${(tipCents() / 100).toFixed(2)} USD
+						</p>
+					{/if}
+				</div>
+
 				<div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
 					{#if checkoutError}
 						<div class="alert alert-error" style="margin: 0; flex: 1;">{checkoutError}</div>
 					{/if}
-					<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
+					{#snippet payButtonLabel()}
 						{#if checkoutLoading}
-							{couponApplied && couponFinalCents <= 0 ? 'Activating…' : 'Redirecting…'}
-						{:else if couponApplied && couponFinalCents <= 0}
+							{couponApplied && couponFinalCents <= 0 && tipCents() === 0 ? 'Activating…' : 'Redirecting…'}
+						{:else if couponApplied && couponFinalCents <= 0 && tipCents() === 0}
 							Activate (No Charge)
 						{:else if currentPaymentMilestone && currentPaymentMilestoneNumber !== null}
-							Authorize Milestone {currentPaymentMilestoneNumber} (${couponApplied ? (couponFinalCents / 100).toFixed(2) : currentPaymentMilestone.amount.toFixed(2)})
+							{@const baseDisplay = couponApplied ? couponFinalCents / 100 : currentPaymentMilestone.amount}
+							{@const totalDisplay = baseDisplay + tipCents() / 100}
+							Authorize Milestone {currentPaymentMilestoneNumber} (${totalDisplay.toFixed(2)})
 						{:else}
-							Pay Now
+							Pay Now{tipCents() > 0 ? ` (+$${(tipCents() / 100).toFixed(2)} tip)` : ''}
 						{/if}
+					{/snippet}
+					<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
+						{@render payButtonLabel()}
 					</button>
 				</div>
 			</div>
