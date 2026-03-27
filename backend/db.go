@@ -169,6 +169,8 @@ var migrations = []func(tx *sql.Tx) error{
 				status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','REVIEW_REQUESTED','APPROVED','PAID')),
 				proof_of_work_url TEXT DEFAULT '',
 				proof_of_work_notes TEXT DEFAULT '',
+				stripe_checkout_session_id TEXT DEFAULT '',
+				stripe_payment_intent TEXT DEFAULT '',
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			)`,
@@ -352,6 +354,22 @@ var migrations = []func(tx *sql.Tx) error{
 		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN current_milestone_id TEXT REFERENCES milestones(id)`); err != nil {
 			if !strings.Contains(err.Error(), "duplicate column name") {
 				return fmt.Errorf("migration 10→11: add current_milestone_id to jobs: %w", err)
+			}
+		}
+		return nil
+	},
+
+	// version 11 → 12: Issue #102 — add stripe_checkout_session_id and stripe_payment_intent
+	// to milestones table. These columns are required by loadMilestonesForJob in jobs.go.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE milestones ADD COLUMN stripe_checkout_session_id TEXT DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 11→12: add stripe_checkout_session_id to milestones: %w", err)
+			}
+		}
+		if _, err := tx.Exec(`ALTER TABLE milestones ADD COLUMN stripe_payment_intent TEXT DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("migration 11→12: add stripe_payment_intent to milestones: %w", err)
 			}
 		}
 		return nil
@@ -573,6 +591,8 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','REVIEW_REQUESTED','APPROVED','PAID')),
 					proof_of_work_url TEXT DEFAULT '',
 					proof_of_work_notes TEXT DEFAULT '',
+					stripe_checkout_session_id TEXT DEFAULT '',
+					stripe_payment_intent TEXT DEFAULT '',
 					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 				)`,
@@ -581,6 +601,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 				`INSERT INTO milestones_new
 				 SELECT m.id, s.id, m.title, m.amount, m.order_index, m.deliverables,
 				        m.status, m.proof_of_work_url, m.proof_of_work_notes,
+				        '', '',
 				        m.created_at, m.updated_at
 				 FROM milestones m
 				 JOIN sow s ON s.job_id = m.job_id`,
