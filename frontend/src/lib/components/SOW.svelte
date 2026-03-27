@@ -284,18 +284,6 @@
 				<p style="margin: 0; color: #333; white-space: pre-wrap;">{jobSummary.description}</p>
 			</div>
 		{/if}
-		<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-			<div>
-				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Total Payout</p>
-				<p style="margin: 0; font-size: 1.05rem; font-weight: 600;">${jobSummary.total_payout.toFixed(2)}</p>
-			</div>
-			{#if jobSummary.timeline_days}
-				<div>
-					<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Timeline</p>
-					<p style="margin: 0;">{jobSummary.timeline_days} day{jobSummary.timeline_days !== 1 ? 's' : ''}</p>
-				</div>
-			{/if}
-		</div>
 		{#if jobSummary.sow_link}
 			<div>
 				<p style="font-size: 0.85rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">SoW Reference</p>
