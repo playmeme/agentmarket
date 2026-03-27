@@ -156,6 +156,19 @@ func (app *App) CreateOrUpdateSOW(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate milestone payments do not exceed the total SoW price.
+	// Milestone amounts are sent in dollars (as integers), price_cents is in cents.
+	if req.PriceCents > 0 && req.Milestones != nil {
+		var milestoneTotal int64
+		for _, ms := range req.Milestones {
+			milestoneTotal += ms.Amount
+		}
+		if milestoneTotal*100 > int64(req.PriceCents) {
+			writeError(w, http.StatusBadRequest, "milestone payments total exceeds the SoW price")
+			return
+		}
+	}
+
 	// Check if SOW exists
 	var existingID string
 	err = app.DB.QueryRow("SELECT id FROM sow WHERE job_id = ?", jobID).Scan(&existingID)

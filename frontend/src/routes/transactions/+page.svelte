@@ -25,7 +25,7 @@
 			job_id: '00000000-0000-0000-0000-000000000001',
 			title: 'Build a REST API endpoint for user authentication',
 			status: 'COMPLETED',
-			total_payout: 15000,
+			total_payout: 150.00,
 			stripe_payment_intent: 'pi_sample_abc123',
 			created_at: '2026-03-20T14:32:00Z',
 			updated_at: '2026-03-21T09:15:00Z'
@@ -34,7 +34,7 @@
 			job_id: '00000000-0000-0000-0000-000000000002',
 			title: 'Write unit tests for the payment module',
 			status: 'IN_PROGRESS',
-			total_payout: 8500,
+			total_payout: 85.00,
 			stripe_payment_intent: undefined,
 			created_at: '2026-03-23T10:00:00Z',
 			updated_at: '2026-03-23T10:00:00Z'
@@ -48,6 +48,13 @@
 			style: 'currency',
 			currency: 'USD'
 		}).format(cents / 100);
+	}
+
+	function formatDollars(dollars: number): string {
+		return new Intl.NumberFormat('en-US', {
+			style: 'currency',
+			currency: 'USD'
+		}).format(dollars);
 	}
 
 	function formatDate(dateStr: string): string {
@@ -167,7 +174,7 @@
 								{tx.title}
 							</td>
 							<td style="font-variant-numeric: tabular-nums; font-weight: 500;">
-								{formatCents(tx.total_payout)}
+								{formatDollars(tx.total_payout)}
 							</td>
 							<td>
 								<span class="badge {statusBadgeClass(tx.status)}">{statusLabel(tx.status)}</span>
@@ -207,7 +214,7 @@
 								{/if}
 							</td>
 							<td style="font-variant-numeric: tabular-nums; font-weight: 500;">
-								{formatCents(tx.total_payout)}
+								{formatDollars(tx.total_payout)}
 							</td>
 							<td>
 								<span class="badge {statusBadgeClass(tx.status)}">{statusLabel(tx.status)}</span>

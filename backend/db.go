@@ -143,7 +143,7 @@ var migrations = []func(tx *sql.Tx) error{
 				agent_id TEXT REFERENCES agents(id),
 				status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
 					'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+					'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 				)),
 				title TEXT NOT NULL,
 				description TEXT DEFAULT '',
@@ -327,27 +327,30 @@ var migrations = []func(tx *sql.Tx) error{
 	// so this is handled by rawMigrations[8] below (requires PRAGMA foreign_keys = OFF).
 	func(tx *sql.Tx) error { return nil },
 
-	// version 9 → 10: Issues #95, #96 — milestone payments + coupons.
-	// Add stripe columns to milestones for per-milestone payment tracking.
-	// Add coupons table for payment discounts.
+	// version 9 → 10: Issue #96 — add coupons table for payment discount codes.
+	// code is unique; value is either a percentage (e.g. "10%") or a flat dollar
+	// amount (e.g. "91.00"). max_uses limits total redemptions; times_used tracks
+	// how many times the coupon has been successfully applied.
 	func(tx *sql.Tx) error {
-		stmts := []string{
-			`ALTER TABLE milestones ADD COLUMN stripe_checkout_session_id TEXT`,
-			`ALTER TABLE milestones ADD COLUMN stripe_payment_intent TEXT`,
-			`CREATE TABLE IF NOT EXISTS coupons (
-				id TEXT PRIMARY KEY,
-				code TEXT UNIQUE NOT NULL,
-				value_pct REAL,
-				value_amount INTEGER,
-				max_uses INTEGER DEFAULT 1,
-				times_used INTEGER DEFAULT 0,
-				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-			)`,
+		_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS coupons (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			code TEXT NOT NULL UNIQUE,
+			value TEXT NOT NULL,
+			max_uses INTEGER NOT NULL DEFAULT 1,
+			times_used INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`)
+		if err != nil {
+			return fmt.Errorf("create coupons table: %w", err)
 		}
-		for _, stmt := range stmts {
-			if _, err := tx.Exec(stmt); err != nil {
-				return fmt.Errorf("migration 9→10: %w\nSQL: %s", err, stmt)
-			}
+		return nil
+	},
+
+	// version 10 → 11: Issue #95 — add current_milestone_id to jobs for milestone-based payments.
+	// Tracks which milestone is currently being paid for during AWAITING_PAYMENT state.
+	func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`ALTER TABLE jobs ADD COLUMN current_milestone_id TEXT REFERENCES milestones(id)`); err != nil {
+			return fmt.Errorf("migration 10→11: add current_milestone_id to jobs: %w", err)
 		}
 		return nil
 	},
@@ -391,7 +394,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					agent_id TEXT REFERENCES agents(id),
 					status TEXT NOT NULL DEFAULT 'UNASSIGNED' CHECK(status IN (
 						'UNASSIGNED','PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 					)),
 					title TEXT NOT NULL,
 					description TEXT DEFAULT '',
@@ -481,7 +484,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					agent_id TEXT REFERENCES agents(id),
 					status TEXT NOT NULL DEFAULT 'PENDING_ACCEPTANCE' CHECK(status IN (
 						'PENDING_ACCEPTANCE','IN_PROGRESS','COMPLETED','DISPUTED','CANCELLED',
-						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED','RETRACTED'
+						'SOW_NEGOTIATION','AWAITING_PAYMENT','DELIVERED'
 					)),
 					title TEXT NOT NULL,
 					description TEXT DEFAULT '',
@@ -637,11 +640,14 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 				return fmt.Errorf("migration 8→9: begin tx: %w", err)
 			}
 
-			stmts := []string{
-				// Step 1: update role values in users before rebuilding the table.
-				`UPDATE users SET role = 'AGENT_MANAGER' WHERE role = 'AGENT_HANDLER'`,
+			// Tell SQLite to hold off on enforcing FKs until tx.Commit()
+			if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration 8→9: defer foreign keys: %w", err)
+			}
 
-				// Step 2: rebuild users table with updated CHECK constraint.
+			stmts := []string{
+				// Step 1: rebuild users table with updated CHECK constraint.
 				`CREATE TABLE users_new (
 					id TEXT PRIMARY KEY,
 					role TEXT NOT NULL CHECK(role IN ('EMPLOYER','AGENT_MANAGER')),
@@ -655,9 +661,24 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 				)`,
-				`INSERT INTO users_new SELECT * FROM users`,
+
+				// Step 2: copy and transform (HANDLER to MANAGER) the data
+				`INSERT INTO users_new (
+					id, role, name, handle, email, password_hash, 
+					email_verified_at, stripe_customer_id, stripe_account_id, 
+					created_at, updated_at
+				) 
+				SELECT 
+					id, 
+					CASE WHEN role = 'AGENT_HANDLER' THEN 'AGENT_MANAGER' ELSE role END, 
+					name, handle, email, password_hash, 
+					email_verified_at, stripe_customer_id, stripe_account_id, 
+					created_at, updated_at 
+				FROM users`,
+
 				`DROP TABLE users`,
 				`ALTER TABLE users_new RENAME TO users`,
+
 
 				// Step 3: rebuild agents table renaming handler_id → manager_id.
 				`CREATE TABLE agents_new (
@@ -690,6 +711,7 @@ var rawMigrations = map[int]func(db *sql.DB) error{
 			return tx.Commit()
 		})
 	},
+
 }
 
 // complexMigration pins a single connection, disables foreign keys for the duration,

@@ -170,9 +170,6 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
 	}
-	if sowLink.Valid {
-		j.SowLink = sowLink.String
-	}
 	return j, err
 }
 
@@ -190,9 +187,6 @@ func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Jo
 	}
 	if stripe.Valid {
 		j.StripePaymentIntent = stripe.String
-	}
-	if sowLink.Valid {
-		j.SowLink = sowLink.String
 	}
 	return j, err
 }
@@ -642,7 +636,17 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	log.Info("milestone approved", "job_id", jobID, "milestone_id", milestoneID, "employer_id", employerID)
+	// Mark the approved milestone as PAID (deliverables confirmed, payment is captured).
+	if _, err := app.DB.Exec(
+		`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		milestoneID,
+	); err != nil {
+		log.Error("milestone approval: failed to mark milestone PAID", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	log.Info("milestone approved and marked PAID", "job_id", jobID, "milestone_id", milestoneID, "employer_id", employerID)
 
 	var m Milestone
 	row := app.DB.QueryRow(
@@ -655,6 +659,43 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
+	}
+
+	// Check if there is a next PENDING milestone.
+	var nextMilestoneID string
+	var nextMilestoneAmount int64
+	var nextMilestoneOrderIndex int
+	nextMilestoneErr := app.DB.QueryRow(
+		`SELECT id, amount, order_index FROM milestones
+		 WHERE sow_id = ? AND status = 'PENDING'
+		 ORDER BY order_index ASC LIMIT 1`,
+		m.SowID,
+	).Scan(&nextMilestoneID, &nextMilestoneAmount, &nextMilestoneOrderIndex)
+
+	if nextMilestoneErr == nil {
+		// There is a next milestone — put job back to AWAITING_PAYMENT.
+		nextMilestoneNumber := nextMilestoneOrderIndex + 1
+		if _, dbErr := app.DB.Exec(
+			`UPDATE jobs SET status = 'AWAITING_PAYMENT', current_milestone_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			jobID,
+		); dbErr != nil {
+			log.Error("milestone approval: failed to set job to AWAITING_PAYMENT for next milestone", "job_id", jobID, "error", dbErr)
+			// Non-fatal: log and continue, job will be stuck in IN_PROGRESS but milestone is PAID.
+		} else {
+			log.Info("milestone approved: job set to AWAITING_PAYMENT for next milestone",
+				"job_id", jobID, "next_milestone_id", nextMilestoneID, "next_milestone_number", nextMilestoneNumber)
+			// Notify the employer that the next milestone payment is due.
+			_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
+				fmt.Sprintf("Milestone %d payment due: %s", nextMilestoneNumber, m.Title+" approved"),
+				fmt.Sprintf("Milestone %d has been approved. Milestone %d ($%d) payment is now due to continue the job.",
+					m.OrderIndex+1, nextMilestoneNumber, nextMilestoneAmount))
+		}
+	} else if nextMilestoneErr == sql.ErrNoRows {
+		// No more milestones — job proceeds normally (stays IN_PROGRESS until delivery).
+		log.Info("milestone approved: all milestones complete or no next milestone", "job_id", jobID)
+	} else {
+		log.Error("milestone approval: failed to check next milestone", "sow_id", m.SowID, "error", nextMilestoneErr)
+		// Non-fatal: proceed.
 	}
 
 	// Notify both parties: employer (confirmation) and agent's manager (milestone completed + payment incoming)
@@ -758,7 +799,7 @@ func (app *App) AcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.Exec(
 		`INSERT INTO sow (id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted)
 		 VALUES (?, ?, '', '', ?, ?, 0, 0)`,
-		sowID, jobID, totalPayout, timelineDays,
+		sowID, jobID, totalPayout*100, timelineDays,
 	)
 	if err != nil {
 		log.Error("job accept: failed to create default SOW", "job_id", jobID, "error", err)
@@ -797,7 +838,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "job_id")
 
 	result, err := app.DB.Exec(
-		`UPDATE jobs SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
+		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
 		jobID, agentID,
 	)
@@ -1191,7 +1232,7 @@ func (app *App) UIAcceptJobHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.Exec(
 		`INSERT INTO sow (id, job_id, detailed_spec, work_process, price_cents, timeline_days, agent_accepted, employer_accepted)
 		 VALUES (?, ?, '', '', ?, ?, 0, 0)`,
-		sowID, jobID, totalPayout, timelineDays,
+		sowID, jobID, totalPayout*100, timelineDays,
 	)
 	if err != nil {
 		log.Error("ui accept job: failed to create default SOW", "job_id", jobID, "error", err)
@@ -1378,9 +1419,36 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := app.DB.Exec(
+	tx, err := app.DB.Begin()
+	if err != nil {
+		log.Error("retract offer: failed to begin transaction", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?))`, jobID)
+	if err != nil {
+		log.Error("retract offer: failed to delete criteria", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	_, err = tx.Exec(`DELETE FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?)`, jobID)
+	if err != nil {
+		log.Error("retract offer: failed to delete milestones", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	_, err = tx.Exec(`DELETE FROM sow WHERE job_id = ?`, jobID)
+	if err != nil {
+		log.Error("retract offer: failed to delete sow", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	result, err := tx.Exec(
 		`UPDATE jobs
-		    SET status = 'RETRACTED',
+		    SET status = 'UNASSIGNED',
 		        agent_id = NULL,
 		        stripe_checkout_session_id = NULL,
 		        updated_at = CURRENT_TIMESTAMP
@@ -1397,6 +1465,12 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		writeError(w, http.StatusConflict, "job could not be retracted — it may have been updated concurrently")
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		log.Error("retract offer: failed to commit transaction", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
@@ -1528,9 +1602,22 @@ func (app *App) AddMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look up the sow_id for this job
+	var sowID string
+	err = app.DB.QueryRow(`SELECT id FROM sow WHERE job_id = ?`, jobID).Scan(&sowID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "SOW not found for this job")
+		return
+	}
+	if err != nil {
+		log.Error("add milestone: db error fetching sow", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
 	// Determine the next order_index
 	var maxOrder int
-	err = app.DB.QueryRow(`SELECT COALESCE(MAX(order_index), -1) FROM milestones WHERE job_id = ?`, jobID).Scan(&maxOrder)
+	err = app.DB.QueryRow(`SELECT COALESCE(MAX(order_index), -1) FROM milestones WHERE sow_id = ?`, sowID).Scan(&maxOrder)
 	if err != nil {
 		log.Error("add milestone: db error getting max order_index", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -1547,8 +1634,8 @@ func (app *App) AddMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	msID := uuid.New().String()
 	_, err = tx.Exec(
-		`INSERT INTO milestones (id, job_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
-		msID, jobID, req.Title, req.Amount, maxOrder+1,
+		`INSERT INTO milestones (id, sow_id, title, amount, order_index) VALUES (?, ?, ?, ?, ?)`,
+		msID, sowID, req.Title, req.Amount, maxOrder+1,
 	)
 	if err != nil {
 		log.Error("add milestone: insert error", "job_id", jobID, "error", err)
@@ -1635,7 +1722,7 @@ func (app *App) EditMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Verify milestone belongs to this job
 	var milestoneJobID string
-	err = app.DB.QueryRow(`SELECT job_id FROM milestones WHERE id = ?`, milestoneID).Scan(&milestoneJobID)
+	err = app.DB.QueryRow(`SELECT s.job_id FROM milestones m JOIN sow s ON m.sow_id = s.id WHERE m.id = ?`, milestoneID).Scan(&milestoneJobID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "milestone not found")
 		return
@@ -1762,7 +1849,7 @@ func (app *App) DeleteMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Verify milestone belongs to this job
 	var milestoneJobID string
-	err = app.DB.QueryRow(`SELECT job_id FROM milestones WHERE id = ?`, milestoneID).Scan(&milestoneJobID)
+	err = app.DB.QueryRow(`SELECT s.job_id FROM milestones m JOIN sow s ON m.sow_id = s.id WHERE m.id = ?`, milestoneID).Scan(&milestoneJobID)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "milestone not found")
 		return

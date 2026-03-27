@@ -92,7 +92,7 @@
 				const err = await res.json().catch(() => ({ error: 'Failed to request revision' }));
 				throw new Error(err.error || 'Failed to request revision');
 			}
-			successMsg = 'Revision requested. The agent handler has been notified.';
+			successMsg = 'Revision requested. The agent manager has been notified.';
 			onUpdate?.();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to request revision';
@@ -113,7 +113,7 @@
 	{/if}
 
 	{#if jobStatus === 'IN_PROGRESS' && isManager}
-		<!-- Handler: submit delivery form -->
+		<!-- Manager: submit delivery form -->
 		<p style="color: #666; font-size: 0.9rem; margin-bottom: 1rem;">
 			Submit your completed work for employer review.
 		</p>
