@@ -5,6 +5,7 @@
 	import { SITE_NAME } from '$lib/config';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { triggerNotificationRefresh } from '$lib/stores/notifications';
 
 	let { children } = $props();
 	let unreadCount = $state(0);
@@ -21,7 +22,12 @@
 			const res = await apiFetch('/api/ui/notifications/count');
 			if (res.ok) {
 				const data = await res.json();
-				unreadCount = data.count ?? 0;
+				const newCount = data.count ?? 0;
+				// If unread count increased, signal dashboard pages to refresh immediately
+				if (newCount > unreadCount) {
+					triggerNotificationRefresh();
+				}
+				unreadCount = newCount;
 			}
 		} catch {
 			// best effort
