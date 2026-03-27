@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -380,6 +381,46 @@ func (app *App) AcceptSOW(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Info("both parties accepted SOW, job moved to AWAITING_PAYMENT", "job_id", jobID)
+
+		// Notify the employer that payment is required. The message is milestone-aware:
+		// if the SoW has milestones, direct the employer to pay for Milestone 1;
+		// otherwise, direct them to pay the full SoW amount.
+		var employerID string
+		if dbErr := app.DB.QueryRow("SELECT employer_id FROM jobs WHERE id = ?", jobID).Scan(&employerID); dbErr == nil {
+			var sow SOW
+			sow, dbErr = app.getSOWByJobID(jobID)
+			if dbErr == nil {
+				var notifMsg string
+				// Look for the first PENDING milestone on this SoW.
+				var firstMilestoneTitle string
+				var firstMilestoneAmount int64
+				var firstMilestoneOrderIndex int
+				milestoneErr := app.DB.QueryRow(
+					`SELECT title, amount, order_index FROM milestones
+					 WHERE sow_id = ? AND status = 'PENDING'
+					 ORDER BY order_index ASC LIMIT 1`,
+					sow.ID,
+				).Scan(&firstMilestoneTitle, &firstMilestoneAmount, &firstMilestoneOrderIndex)
+				if milestoneErr == nil {
+					milestoneNumber := firstMilestoneOrderIndex + 1
+					notifMsg = fmt.Sprintf(
+						"Both parties have agreed to the SoW. Authorize a payment for Milestone %d — %s ($%d) to start the job. "+
+							"The actual payment transaction won't complete until after the deliverables are approved.",
+						milestoneNumber, firstMilestoneTitle, firstMilestoneAmount,
+					)
+				} else {
+					amountDollars := float64(sow.PriceCents) / 100.0
+					notifMsg = fmt.Sprintf(
+						"Both parties have agreed to the SoW. Authorize a payment of $%.2f to start the job. "+
+							"The actual payment transaction won't complete until after the deliverables are approved.",
+						amountDollars,
+					)
+				}
+				_ = app.CreateNotification(employerID, jobID, NotifPaymentDue,
+					"Payment required to start job",
+					notifMsg)
+			}
+		}
 	}
 
 	sow, err := app.getSOWByJobID(jobID)
