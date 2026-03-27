@@ -147,6 +147,16 @@ func (app *App) DismissNotification(notifID, userID string) error {
 	return nil
 }
 
+// DismissNotificationsByJobID marks all JOB_OFFER notifications for a given job as dismissed and read.
+func (app *App) DismissNotificationsByJobID(jobID string) error {
+	_, err := app.DB.Exec(
+		`UPDATE notifications SET dismissed = 1, read = 1, updated_at = CURRENT_TIMESTAMP
+		 WHERE job_id = ? AND type = 'JOB_OFFER'`,
+		jobID,
+	)
+	return err
+}
+
 // markNotificationsRead marks all non-dismissed notifications for a user as read.
 func (app *App) markNotificationsRead(userID string) error {
 	_, err := app.DB.Exec(
