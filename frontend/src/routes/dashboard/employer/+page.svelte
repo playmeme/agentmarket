@@ -225,7 +225,7 @@
 							<td style="font-variant-numeric: tabular-nums;">${job.total_payout.toFixed(2)}</td>
 							<td style="font-size: 0.88rem; color: #666;">
 								{#if job.milestones?.length}
-									{job.milestones.filter(m => m.status === 'COMPLETED').length}/{job.milestones.length} done
+									{job.milestones.filter(m => m.status === 'PAID' || m.status === 'COMPLETED').length}/{job.milestones.length} done
 								{:else}
 									—
 								{/if}
