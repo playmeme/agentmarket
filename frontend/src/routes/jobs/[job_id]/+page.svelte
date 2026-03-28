@@ -55,6 +55,8 @@
 		status: string;
 		submitted_at: string;
 		approved_at: string;
+		proof_of_work_url: string;
+		proof_of_work_notes: string;
 	}
 
 	interface Job {
@@ -99,6 +101,11 @@
 	let rejectError = $state('');
 	let rejectReason = $state('');
 	let showRejectForm = $state(false);
+	let milestoneSubmitId: string | null = $state(null);
+	let milestoneProofUrl = $state('');
+	let milestoneProofNotes = $state('');
+	let milestoneSubmitting = $state(false);
+	let milestoneSubmitError = $state('');
 
 	const isEmployer = $derived($auth?.role === 'EMPLOYER');
 	const isManager = $derived($auth?.role === 'AGENT_MANAGER');
@@ -337,6 +344,51 @@
 			rejectError = e instanceof Error ? e.message : 'Failed to reject offer';
 		} finally {
 			rejectLoading = false;
+		}
+	}
+
+	async function submitMilestone() {
+		if (!milestoneSubmitId || !job) return;
+		milestoneSubmitting = true;
+		milestoneSubmitError = '';
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${job.id}/milestones/${milestoneSubmitId}/submit`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					proof_of_work_url: milestoneProofUrl,
+					proof_of_work_notes: milestoneProofNotes
+				})
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to submit milestone' }));
+				throw new Error(err.error || 'Failed to submit milestone');
+			}
+			milestoneSubmitId = null;
+			milestoneProofUrl = '';
+			milestoneProofNotes = '';
+			await loadJob();
+		} catch (e: unknown) {
+			milestoneSubmitError = e instanceof Error ? e.message : 'Failed to submit milestone';
+		} finally {
+			milestoneSubmitting = false;
+		}
+	}
+
+	async function approveMilestone(milestoneId: string) {
+		if (!job) return;
+		try {
+			const res = await apiFetch(`/api/ui/jobs/${job.id}/milestones/${milestoneId}/approve`, {
+				method: 'POST'
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: 'Failed to approve milestone' }));
+				throw new Error(err.error || 'Failed to approve milestone');
+			}
+			await loadJob();
+		} catch (e: unknown) {
+			// ignore silently — could surface an error state if needed
+			console.error(e);
 		}
 	}
 
@@ -738,8 +790,8 @@
 			</div>
 		{/if}
 
-		<!-- Delivery section — shown from IN_PROGRESS onward -->
-		{#if ['IN_PROGRESS', 'DELIVERED', 'COMPLETED'].includes(job.status)}
+		<!-- Delivery section — shown from IN_PROGRESS onward (not for milestone jobs) -->
+		{#if ['IN_PROGRESS', 'DELIVERED', 'COMPLETED'].includes(job.status) && !job.milestones?.length}
 			<DeliverySection
 				{jobId}
 				jobStatus={job.status}
@@ -770,6 +822,92 @@
 										<li style="margin-bottom: 0.2rem;">{criterion.description}</li>
 									{/each}
 								</ul>
+							{/if}
+
+							<!-- Milestone submit form (manager, PENDING, job IN_PROGRESS) -->
+							{#if milestone.status === 'PENDING' && isManager && job.status === 'IN_PROGRESS'}
+								{#if milestoneSubmitId === milestone.id}
+									<div style="margin-top: 0.75rem; padding: 0.75rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;">
+										{#if milestoneSubmitError}
+											<div class="alert alert-error" style="margin-bottom: 0.5rem;">{milestoneSubmitError}</div>
+										{/if}
+										<div class="form-group" style="margin-bottom: 0.5rem;">
+											<label style="font-size: 0.85rem; font-weight: 600; color: #555;">Proof of Work Notes</label>
+											<textarea
+												bind:value={milestoneProofNotes}
+												placeholder="Describe what was completed for this milestone…"
+												style="min-height: 70px; margin-top: 0.3rem;"
+												disabled={milestoneSubmitting}
+											></textarea>
+										</div>
+										<div class="form-group" style="margin-bottom: 0.75rem;">
+											<label style="font-size: 0.85rem; font-weight: 600; color: #555;">Proof of Work URL (optional)</label>
+											<input
+												type="url"
+												bind:value={milestoneProofUrl}
+												placeholder="https://…"
+												style="margin-top: 0.3rem;"
+												disabled={milestoneSubmitting}
+											/>
+										</div>
+										<div style="display: flex; gap: 0.5rem;">
+											<button
+												type="button"
+												class="btn btn-primary"
+												style="font-size: 0.85rem;"
+												onclick={submitMilestone}
+												disabled={milestoneSubmitting}
+											>
+												{milestoneSubmitting ? 'Submitting…' : 'Submit for Review'}
+											</button>
+											<button
+												type="button"
+												class="btn btn-secondary"
+												style="font-size: 0.85rem;"
+												onclick={() => { milestoneSubmitId = null; milestoneProofUrl = ''; milestoneProofNotes = ''; milestoneSubmitError = ''; }}
+												disabled={milestoneSubmitting}
+											>
+												Cancel
+											</button>
+										</div>
+									</div>
+								{:else}
+									<button
+										type="button"
+										class="btn btn-secondary"
+										style="margin-top: 0.5rem; font-size: 0.85rem;"
+										onclick={() => { milestoneSubmitId = milestone.id; milestoneSubmitError = ''; }}
+									>
+										Submit Milestone
+									</button>
+								{/if}
+							{/if}
+
+							<!-- Review requested: show proof details + approve button -->
+							{#if milestone.status === 'REVIEW_REQUESTED'}
+								<div style="margin-top: 0.5rem; font-size: 0.88rem; color: #555;">
+									{#if milestone.proof_of_work_notes}
+										<p style="margin: 0 0 0.3rem;"><strong>Proof notes:</strong> {milestone.proof_of_work_notes}</p>
+									{/if}
+									{#if milestone.proof_of_work_url}
+										<p style="margin: 0 0 0.3rem;"><strong>Proof URL:</strong> <a href={milestone.proof_of_work_url} target="_blank" rel="noopener noreferrer" style="color: #4f46e5;">{milestone.proof_of_work_url}</a></p>
+									{/if}
+								</div>
+								{#if isEmployer}
+									<button
+										type="button"
+										class="btn btn-primary"
+										style="margin-top: 0.5rem; font-size: 0.85rem;"
+										onclick={() => approveMilestone(milestone.id)}
+									>
+										Approve Milestone
+									</button>
+								{/if}
+							{/if}
+
+							<!-- Approved/Paid: show checkmark -->
+							{#if milestone.status === 'APPROVED' || milestone.status === 'PAID'}
+								<p style="margin: 0.4rem 0 0; font-size: 0.88rem; color: #065f46;">&#10003; {milestoneProgressLabel(milestone.status)}</p>
 							{/if}
 						</div>
 					{/each}

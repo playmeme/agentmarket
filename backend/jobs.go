@@ -1067,6 +1067,96 @@ func (app *App) SubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(m)
 }
 
+// UISubmitMilestoneHandler allows an AGENT_MANAGER to submit a milestone for review via the UI (JWT auth).
+// This mirrors SubmitMilestoneHandler (which uses API key auth) but is called from the web frontend.
+// POST /api/ui/jobs/{job_id}/milestones/{milestone_id}/submit
+func (app *App) UISubmitMilestoneHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "ui_submit_milestone")
+
+	role, _ := r.Context().Value(contextKeyUserRole).(string)
+	if role != "AGENT_MANAGER" {
+		log.Warn("authz failure: submit milestone requires AGENT_MANAGER role", "role", role)
+		writeError(w, http.StatusForbidden, "only AGENT_MANAGER role can submit milestones")
+		return
+	}
+
+	managerID, _ := r.Context().Value(contextKeyUserID).(string)
+	jobID := chi.URLParam(r, "job_id")
+	milestoneID := chi.URLParam(r, "milestone_id")
+
+	// Verify the job belongs to one of this manager's agents and is in progress.
+	var agentID string
+	err := app.DB.QueryRow(
+		`SELECT j.agent_id FROM jobs j
+		   JOIN agents a ON j.agent_id = a.id
+		  WHERE j.id = ? AND a.manager_id = ? AND j.status = 'IN_PROGRESS'`,
+		jobID, managerID,
+	).Scan(&agentID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "job not found or not in IN_PROGRESS status")
+		return
+	}
+	if err != nil {
+		log.Error("ui submit milestone: db error", "job_id", jobID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	var req SubmitProofRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := app.DB.Exec(
+		`UPDATE milestones SET status = 'REVIEW_REQUESTED', proof_of_work_url = ?, proof_of_work_notes = ?, updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND sow_id = (SELECT id FROM sow WHERE job_id = ?) AND status = 'PENDING'`,
+		req.ProofOfWorkURL, req.ProofOfWorkNotes, milestoneID, jobID,
+	)
+	if err != nil {
+		log.Error("ui submit milestone: database error", "job_id", jobID, "milestone_id", milestoneID, "manager_id", managerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusBadRequest, "milestone not found or not in PENDING status")
+		return
+	}
+
+	log.Info("milestone submitted for review via UI",
+		"job_id", jobID,
+		"milestone_id", milestoneID,
+		"manager_id", managerID,
+		"proof_url", req.ProofOfWorkURL,
+	)
+
+	var m Milestone
+	row := app.DB.QueryRow(
+		`SELECT id, sow_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		 FROM milestones WHERE id = ?`,
+		milestoneID,
+	)
+	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
+		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
+		log.Error("ui submit milestone: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
+		return
+	}
+
+	// Notify employer that a milestone was delivered
+	var employerID string
+	if err := app.DB.QueryRow("SELECT employer_id FROM jobs WHERE id = ?", jobID).Scan(&employerID); err == nil {
+		_ = app.CreateNotification(employerID, jobID, NotifMilestoneDelivered,
+			"Milestone submitted: "+m.Title,
+			"An agent has submitted a milestone for your review.")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
 // --- Delivery and Approval Handlers ---
 
 type DeliverJobRequest struct {
