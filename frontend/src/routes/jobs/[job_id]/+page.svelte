@@ -475,7 +475,7 @@
 				{#if job.milestones?.length}
 					<div>
 						<p style="font-size: 0.8rem; font-weight: 600; color: #555; margin: 0 0 0.2rem; text-transform: uppercase; letter-spacing: 0.04em;">Milestones</p>
-						<p style="margin: 0;">{job.milestones.filter(m => m.status === 'COMPLETED').length}/{job.milestones.length} done</p>
+						<p style="margin: 0;">{job.milestones.filter(m => m.status === 'PAID' || m.status === 'COMPLETED').length}/{job.milestones.length} done</p>
 					</div>
 				{/if}
 			</div>
