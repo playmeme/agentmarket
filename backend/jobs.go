@@ -1732,10 +1732,10 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var query string
 	if role == "EMPLOYER" {
-		query = `SELECT id, title, status, total_payout, stripe_payment_intent, created_at, updated_at
+		query = `SELECT id, title, status, total_payout, stripe_payment_intent, tip_cents, coupon_cents, transaction_cents, created_at, updated_at
 		          FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`
 	} else {
-		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.created_at, j.updated_at
+		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.tip_cents, j.coupon_cents, j.transaction_cents, j.created_at, j.updated_at
 		          FROM jobs j JOIN agents a ON j.agent_id = a.id
 		          WHERE a.manager_id = ? ORDER BY j.created_at DESC`
 	}
@@ -1751,7 +1751,7 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var t TransactionSummary
 		var spi sql.NullString
-		if err := rows.Scan(&t.JobID, &t.Title, &t.Status, &t.TotalPayout, &spi, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.JobID, &t.Title, &t.Status, &t.TotalPayout, &spi, &t.TipCents, &t.CouponCents, &t.TransactionCents, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
