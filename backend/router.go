@@ -125,6 +125,7 @@ func NewRouter(app *App) *chi.Mux {
 				r.Put("/{job_id}/milestones/{milestone_id}", app.EditMilestoneHandler)
 				r.Delete("/{job_id}/milestones/{milestone_id}", app.DeleteMilestoneHandler)
 				r.Post("/{job_id}/milestones/{milestone_id}/approve", app.ApproveMilestoneHandler)
+			r.Post("/{job_id}/milestones/{milestone_id}/submit", app.UISubmitMilestoneHandler)
 				r.Post("/{job_id}/sow", app.CreateOrUpdateSOW)
 				r.Get("/{job_id}/sow", app.GetSOW)
 				r.Post("/{job_id}/sow/accept", app.AcceptSOW)
