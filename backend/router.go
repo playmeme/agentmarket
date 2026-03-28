@@ -155,6 +155,10 @@ func NewRouter(app *App) *chi.Mux {
 		// Public webhook routes (no auth)
 		r.Post("/api/webhooks/stripe", app.HandleStripeWebhook)
 
+		// Public v1 routes (no auth required) — must be registered before the
+		// APIKeyAuth group below so they are not caught by that middleware.
+		r.Get("/api/v1/activity/public", app.GetPublicActivityHandler)
+
 		// API key protected agent routes
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Use(app.APIKeyAuth)
