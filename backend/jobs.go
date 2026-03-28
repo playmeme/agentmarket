@@ -1650,24 +1650,29 @@ func (app *App) RetractOfferHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?))`, jobID)
-	if err != nil {
-		log.Error("retract offer: failed to delete criteria", "job_id", jobID, "error", err)
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	_, err = tx.Exec(`DELETE FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?)`, jobID)
-	if err != nil {
-		log.Error("retract offer: failed to delete milestones", "job_id", jobID, "error", err)
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
-	_, err = tx.Exec(`DELETE FROM sow WHERE job_id = ?`, jobID)
-	if err != nil {
-		log.Error("retract offer: failed to delete sow", "job_id", jobID, "error", err)
-		writeError(w, http.StatusInternalServerError, "database error")
-		return
-	}
+	// Do not delete the SoW when a Job is retracted.
+	// The SoW might have been pre-filled by the Employer, so we don't want to delete it.
+
+	// Leaving this commented-out code here, temporarily.
+	// 
+	// _, err = tx.Exec(`DELETE FROM criteria WHERE milestone_id IN (SELECT id FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?))`, jobID)
+	// if err != nil {
+	// 	log.Error("retract offer: failed to delete criteria", "job_id", jobID, "error", err)
+	// 	writeError(w, http.StatusInternalServerError, "database error")
+	// 	return
+	// }
+	// _, err = tx.Exec(`DELETE FROM milestones WHERE sow_id IN (SELECT id FROM sow WHERE job_id = ?)`, jobID)
+	// if err != nil {
+	// 	log.Error("retract offer: failed to delete milestones", "job_id", jobID, "error", err)
+	// 	writeError(w, http.StatusInternalServerError, "database error")
+	// 	return
+	// }
+	// _, err = tx.Exec(`DELETE FROM sow WHERE job_id = ?`, jobID)
+	// if err != nil {
+	// 	log.Error("retract offer: failed to delete sow", "job_id", jobID, "error", err)
+	// 	writeError(w, http.StatusInternalServerError, "database error")
+	// 	return
+	// }
 
 	result, err := tx.Exec(
 		`UPDATE jobs
