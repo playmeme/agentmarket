@@ -781,6 +781,206 @@ func TestDeliverJobNoMilestonesStillWorks(t *testing.T) {
 	}
 }
 
+// TestUIDeliverJobBlockedWhenMilestonesExist verifies that UIDeliverJobHandler (JWT path)
+// also rejects delivery when the job has milestones — matching the same guard in the API
+// key DeliverJobHandler. Regression for issue #128 (bug surviving PRs #140 and #141).
+func TestUIDeliverJobBlockedWhenMilestonesExist(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerTok := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+	_ = agentAPIKey
+
+	jobID, _, _ := setupSowWithMilestones(t, app, router, employerID, managerID, agentID, agentAPIKey)
+
+	// Use a 100% coupon to skip Stripe and move job to IN_PROGRESS.
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES ('UIDEL128', '100%', 10, 0)`,
+	); err != nil {
+		t.Fatalf("insert coupon: %v", err)
+	}
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+		map[string]string{"coupon_code": "UIDEL128"}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify job is IN_PROGRESS.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Fatalf("expected IN_PROGRESS, got %q", job.Status)
+	}
+
+	// Attempt to use UIDeliverJobHandler on a job that has milestones — should be rejected.
+	body := DeliverJobRequest{DeliveryNotes: "Done", DeliveryURL: "https://example.com"}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/deliver", body, managerTok)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("ui deliver with milestones: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Job must still be IN_PROGRESS (not DELIVERED).
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("job should still be IN_PROGRESS after rejected ui deliver, got %q", job.Status)
+	}
+}
+
+// TestMilestoneLifecycleThreeMilestones verifies the full 3-milestone flow — the specific
+// scenario reported in issue #128. After approving milestone 1, the job must NOT be
+// marked COMPLETED; it must proceed to AWAITING_PAYMENT for milestone 2, then milestone 3.
+func TestMilestoneLifecycleThreeMilestones(t *testing.T) {
+	t.Parallel()
+	app := setupTestApp(t)
+	router := NewRouter(app)
+
+	employerID, managerID, agentID, agentAPIKey := setupJobFixtures(t, app)
+	employerTok := makeAuthToken(t, app, employerID, "EMPLOYER")
+	managerTok := makeAuthToken(t, app, managerID, "AGENT_MANAGER")
+
+	// Create a job with 3 milestones.
+	hireBody := HireRequest{
+		AgentID:      agentID,
+		Title:        "Three milestone job",
+		TotalPayout:  300,
+		TimelineDays: 21,
+	}
+	rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/hire", hireBody, employerTok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("hire: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var job Job
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	jobID := job.ID
+
+	// Agent manager accepts.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/accept", nil, managerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accept: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Create SOW with 3 milestones (100 + 100 + 100 = 300).
+	sowBody := SOWRequest{
+		DetailedSpec: "Build three things",
+		WorkProcess:  "Weekly updates",
+		PriceCents:   30000,
+		TimelineDays: 21,
+		Milestones: []SOWMilestoneInput{
+			{Title: "Phase 1", Amount: 100, Deliverables: "First third"},
+			{Title: "Phase 2", Amount: 100, Deliverables: "Second third"},
+			{Title: "Phase 3", Amount: 100, Deliverables: "Final third"},
+		},
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/sow", sowBody, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create sow: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Both parties accept SOW.
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/sow/accept", nil, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("employer sow accept: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/sow/accept", nil, managerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manager sow accept: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify AWAITING_PAYMENT and 3 milestones.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "AWAITING_PAYMENT" {
+		t.Fatalf("expected AWAITING_PAYMENT, got %q", job.Status)
+	}
+	if len(job.Milestones) != 3 {
+		t.Fatalf("expected 3 milestones, got %d", len(job.Milestones))
+	}
+	m1ID := job.Milestones[0].ID
+	m2ID := job.Milestones[1].ID
+	m3ID := job.Milestones[2].ID
+
+	runMilestone := func(mID, couponSuffix string) {
+		t.Helper()
+		couponCode := fmt.Sprintf("MS-%s-%s", mID[:4], couponSuffix)
+		if _, err := app.DB.Exec(
+			`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, couponCode,
+		); err != nil {
+			t.Fatalf("insert coupon %s: %v", couponCode, err)
+		}
+		rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+			map[string]string{"coupon_code": couponCode}, employerTok)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("checkout %s: expected 200, got %d: %s", mID, rr.Code, rr.Body.String())
+		}
+
+		// Verify IN_PROGRESS.
+		rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+		json.Unmarshal(rr.Body.Bytes(), &job)
+		if job.Status != "IN_PROGRESS" {
+			t.Fatalf("expected IN_PROGRESS after checkout for %s, got %q", mID, job.Status)
+		}
+
+		// Agent submits milestone.
+		submitBody := SubmitProofRequest{
+			ProofOfWorkURL:   "https://example.com/" + mID,
+			ProofOfWorkNotes: "Done",
+		}
+		rr = doRequest(t, router, http.MethodPost,
+			"/api/v1/jobs/"+jobID+"/milestones/"+mID+"/submit", submitBody, agentAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("submit %s: expected 200, got %d: %s", mID, rr.Code, rr.Body.String())
+		}
+
+		// Employer approves milestone.
+		rr = doRequest(t, router, http.MethodPost,
+			"/api/ui/jobs/"+jobID+"/milestones/"+mID+"/approve", nil, employerTok)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("approve %s: expected 200, got %d: %s", mID, rr.Code, rr.Body.String())
+		}
+	}
+
+	// --- Milestone 1 ---
+	runMilestone(m1ID, "1")
+
+	// After M1 approved, job must NOT be COMPLETED — must be AWAITING_PAYMENT.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status == "COMPLETED" {
+		t.Errorf("BUG: job marked COMPLETED after only milestone 1 of 3 was approved")
+	}
+	if job.Status != "AWAITING_PAYMENT" {
+		t.Errorf("expected AWAITING_PAYMENT after m1 approved, got %q", job.Status)
+	}
+
+	// --- Milestone 2 ---
+	runMilestone(m2ID, "2")
+
+	// After M2 approved, job must NOT be COMPLETED — must be AWAITING_PAYMENT.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status == "COMPLETED" {
+		t.Errorf("BUG: job marked COMPLETED after only milestone 2 of 3 was approved")
+	}
+	if job.Status != "AWAITING_PAYMENT" {
+		t.Errorf("expected AWAITING_PAYMENT after m2 approved, got %q", job.Status)
+	}
+
+	// --- Milestone 3 (last) ---
+	runMilestone(m3ID, "3")
+
+	// After M3 (last) approved, job MUST be COMPLETED.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "COMPLETED" {
+		t.Errorf("expected COMPLETED after all 3 milestones approved, got %q", job.Status)
+	}
+}
+
 // TestDeclineJobResetsSowAccepted verifies that when an agent declines a job via the
 // agent API key path, both SoW accepted fields are reset to false. This ensures that
 // if the employer re-offers the same job, the new offer starts with a clean acceptance
