@@ -203,10 +203,19 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		// employer approves the delivered work via ApproveMilestoneHandler.
 		//
 		// Mark job as IN_PROGRESS directly.
+		couponCents := baseAmountCents // full coupon = discount equals the base amount
+		var transactionCents int64     // $0 charged
 		_, dbErr := app.DB.Exec(
-			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, tip_cents = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			nullableString(currentMilestoneID), jobID,
+			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, tip_cents = 0, coupon_cents = ?, transaction_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			nullableString(currentMilestoneID), couponCents, transactionCents, jobID,
 		)
+		// Also record on the milestone row if applicable.
+		if dbErr == nil && currentMilestoneID != "" {
+			_, _ = app.DB.Exec(
+				`UPDATE milestones SET coupon_cents = ?, tip_cents = 0, transaction_cents = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+				couponCents, currentMilestoneID,
+			)
+		}
 		if dbErr != nil {
 			log.Error("checkout: failed to update job to IN_PROGRESS after full coupon", "job_id", jobID, "error", dbErr)
 			writeError(w, http.StatusInternalServerError, "database error")
@@ -282,11 +291,20 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save checkout session ID, current milestone (if any), and tip to job.
+	// Save checkout session ID, current milestone (if any), tip, coupon, and
+	// transaction total to job.
+	couponCents := baseAmountCents - chargeAmountCents // discount in cents
 	_, err = app.DB.Exec(
-		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, tip_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		cs.ID, nullableString(currentMilestoneID), tipCents, jobID,
+		`UPDATE jobs SET stripe_checkout_session_id = ?, current_milestone_id = ?, tip_cents = ?, coupon_cents = ?, transaction_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		cs.ID, nullableString(currentMilestoneID), tipCents, couponCents, totalChargeCents, jobID,
 	)
+	// Also record on the milestone row if applicable.
+	if err == nil && currentMilestoneID != "" {
+		_, _ = app.DB.Exec(
+			`UPDATE milestones SET coupon_cents = ?, tip_cents = ?, transaction_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			couponCents, tipCents, totalChargeCents, currentMilestoneID,
+		)
+	}
 	if err != nil {
 		log.Error("checkout: failed to save session id", "job_id", jobID, "session_id", cs.ID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
