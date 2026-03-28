@@ -448,8 +448,9 @@ func TestSowAcceptNotifiesEmployerWithMilestone(t *testing.T) {
 	}
 }
 
-// TestApproveFirstMilestoneTriggersNextPayment verifies that approving milestone 1
-// sets the job to AWAITING_PAYMENT for milestone 2 and creates a notification.
+// TestApproveFirstMilestoneTriggersNextMilestone verifies that approving milestone 1
+// keeps the job IN_PROGRESS and advances to the next milestone. Payment is collected
+// upfront; milestones are work checkpoints, not separate payment gates.
 // We simulate the flow by directly setting the DB state to IN_PROGRESS with m1 in
 // REVIEW_REQUESTED status — this mimics the state after payment was made and the
 // agent submitted work, without needing a real Stripe session.
@@ -483,13 +484,14 @@ func TestApproveFirstMilestoneTriggersNextPayment(t *testing.T) {
 		t.Fatalf("approve milestone: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Job should now be AWAITING_PAYMENT again (for milestone 2)
+	// Job should stay IN_PROGRESS with current_milestone_id advanced to m2.
+	// Payment was collected upfront; milestones are work checkpoints.
 	var status string
 	if err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&status); err != nil {
 		t.Fatalf("query job status: %v", err)
 	}
-	if status != "AWAITING_PAYMENT" {
-		t.Errorf("expected AWAITING_PAYMENT after m1 approval (for m2), got %q", status)
+	if status != "IN_PROGRESS" {
+		t.Errorf("expected IN_PROGRESS after m1 approval, got %q", status)
 	}
 
 	// Employer should have a NEXT_MILESTONE_PAYMENT_DUE notification
