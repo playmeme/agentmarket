@@ -37,6 +37,9 @@ type Milestone struct {
 	ProofOfWorkNotes         string      `json:"proof_of_work_notes"`
 	StripeCheckoutSessionID  string      `json:"stripe_checkout_session_id,omitempty"`
 	StripePaymentIntent      string      `json:"stripe_payment_intent,omitempty"`
+	CouponCents              int64       `json:"coupon_cents"`
+	TipCents                 int64       `json:"tip_cents"`
+	TransactionCents         int64       `json:"transaction_cents"`
 	CreatedAt                time.Time   `json:"created_at"`
 	UpdatedAt                time.Time   `json:"updated_at"`
 	Criteria                 []Criterion `json:"criteria,omitempty"`
@@ -55,6 +58,8 @@ type Job struct {
 	SowLink             string      `json:"sow_link,omitempty"`
 	StripePaymentIntent string      `json:"stripe_payment_intent,omitempty"`
 	TipCents            int64       `json:"tip_cents"`
+	CouponCents         int64       `json:"coupon_cents"`
+	TransactionCents    int64       `json:"transaction_cents"`
 	IsPublic            bool        `json:"is_public"`
 	CreatedAt           time.Time   `json:"created_at"`
 	UpdatedAt           time.Time   `json:"updated_at"`
@@ -125,6 +130,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 		`SELECT m.id, m.sow_id, m.title, m.amount, m.order_index, m.deliverables, m.status,
 		        m.proof_of_work_url, m.proof_of_work_notes,
 		        COALESCE(m.stripe_checkout_session_id, ''), COALESCE(m.stripe_payment_intent, ''),
+		        m.coupon_cents, m.tip_cents, m.transaction_cents,
 		        m.created_at, m.updated_at
 		 FROM milestones m
 		 JOIN sow s ON m.sow_id = s.id
@@ -142,6 +148,7 @@ func (app *App) loadMilestonesForJob(jobID string) ([]Milestone, error) {
 		if err := rows.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
 			&m.ProofOfWorkURL, &m.ProofOfWorkNotes,
 			&m.StripeCheckoutSessionID, &m.StripePaymentIntent,
+			&m.CouponCents, &m.TipCents, &m.TransactionCents,
 			sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 			slog.Error("load milestones: scan error", "job_id", jobID, "error", err)
 			return nil, err
@@ -164,7 +171,7 @@ func (app *App) scanJob(row interface{ Scan(...interface{}) error }) (Job, error
 	var agentID, sowLink, stripe sql.NullString
 	var isPublic int
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt})
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &j.CouponCents, &j.TransactionCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt})
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -184,7 +191,7 @@ func (app *App) scanJobWithName(row interface{ Scan(...interface{}) error }) (Jo
 	var agentID, sowLink, stripe sql.NullString
 	var isPublic int
 	err := row.Scan(&j.ID, &j.EmployerID, &agentID, &j.Status, &j.Title, &j.Description,
-		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt}, &j.AgentName)
+		&j.TotalPayout, &j.TimelineDays, &sowLink, &stripe, &j.TipCents, &j.CouponCents, &j.TransactionCents, &isPublic, sqliteTime{&j.CreatedAt}, sqliteTime{&j.UpdatedAt}, &j.AgentName)
 	if agentID.Valid {
 		j.AgentID = agentID.String
 	}
@@ -525,7 +532,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	if role == "EMPLOYER" {
 		// JOIN agents so we can return the agent name alongside agent_id
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.coupon_cents, j.transaction_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 LEFT JOIN agents a ON j.agent_id = a.id
 			 WHERE j.employer_id = ?
@@ -535,7 +542,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// AGENT_MANAGER: list jobs for any of their agents
 		rows, err = app.DB.Query(
-			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
+			`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.coupon_cents, j.transaction_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 			 FROM jobs j
 			 JOIN agents a ON j.agent_id = a.id
 			 WHERE a.manager_id = ?
@@ -568,7 +575,7 @@ func (app *App) ListJobsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) getJobDetail(jobID string) (Job, error) {
 	row := app.DB.QueryRow(
-		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
+		`SELECT j.id, j.employer_id, j.agent_id, j.status, j.title, j.description, j.total_payout, j.timeline_days, j.sow_link, j.stripe_payment_intent, j.tip_cents, j.coupon_cents, j.transaction_cents, j.is_public, j.created_at, j.updated_at, COALESCE(a.name, '')
 		 FROM jobs j
 		 LEFT JOIN agents a ON j.agent_id = a.id
 		 WHERE j.id = ?`,
@@ -725,12 +732,15 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 
 	var m Milestone
 	row := app.DB.QueryRow(
-		`SELECT id, sow_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes, created_at, updated_at
+		`SELECT id, sow_id, title, amount, order_index, deliverables, status, proof_of_work_url, proof_of_work_notes,
+		        coupon_cents, tip_cents, transaction_cents, created_at, updated_at
 		 FROM milestones WHERE id = ?`,
 		milestoneID,
 	)
 	if err := row.Scan(&m.ID, &m.SowID, &m.Title, &m.Amount, &m.OrderIndex, &m.Deliverables, &m.Status,
-		&m.ProofOfWorkURL, &m.ProofOfWorkNotes, sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
+		&m.ProofOfWorkURL, &m.ProofOfWorkNotes,
+		&m.CouponCents, &m.TipCents, &m.TransactionCents,
+		sqliteTime{&m.CreatedAt}, sqliteTime{&m.UpdatedAt}); err != nil {
 		log.Error("milestone approval: failed to retrieve after update", "milestone_id", milestoneID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to retrieve milestone")
 		return
@@ -807,7 +817,7 @@ func (app *App) GetPendingJobsHandler(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := r.Context().Value(contextKeyAgentID).(string)
 
 	rows, err := app.DB.Query(
-		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, stripe_payment_intent, tip_cents, is_public, created_at, updated_at
+		`SELECT id, employer_id, agent_id, status, title, description, total_payout, timeline_days, sow_link, stripe_payment_intent, tip_cents, coupon_cents, transaction_cents, is_public, created_at, updated_at
 		 FROM jobs WHERE agent_id = ? AND status = 'PENDING_ACCEPTANCE' ORDER BY created_at DESC`,
 		agentID,
 	)
@@ -1707,6 +1717,9 @@ type TransactionSummary struct {
 	Status              string `json:"status"`
 	TotalPayout         int64  `json:"total_payout"`
 	StripePaymentIntent string `json:"stripe_payment_intent,omitempty"`
+	TipCents            int64  `json:"tip_cents"`
+	CouponCents         int64  `json:"coupon_cents"`
+	TransactionCents    int64  `json:"transaction_cents"`
 	CreatedAt           string `json:"created_at"`
 	UpdatedAt           string `json:"updated_at"`
 }
@@ -1719,10 +1732,10 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var query string
 	if role == "EMPLOYER" {
-		query = `SELECT id, title, status, total_payout, stripe_payment_intent, created_at, updated_at
+		query = `SELECT id, title, status, total_payout, stripe_payment_intent, tip_cents, coupon_cents, transaction_cents, created_at, updated_at
 		          FROM jobs WHERE employer_id = ? ORDER BY created_at DESC`
 	} else {
-		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.created_at, j.updated_at
+		query = `SELECT j.id, j.title, j.status, j.total_payout, j.stripe_payment_intent, j.tip_cents, j.coupon_cents, j.transaction_cents, j.created_at, j.updated_at
 		          FROM jobs j JOIN agents a ON j.agent_id = a.id
 		          WHERE a.manager_id = ? ORDER BY j.created_at DESC`
 	}
@@ -1738,7 +1751,7 @@ func (app *App) GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var t TransactionSummary
 		var spi sql.NullString
-		if err := rows.Scan(&t.JobID, &t.Title, &t.Status, &t.TotalPayout, &spi, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.JobID, &t.Title, &t.Status, &t.TotalPayout, &spi, &t.TipCents, &t.CouponCents, &t.TransactionCents, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
