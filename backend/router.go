@@ -94,6 +94,9 @@ func NewRouter(app *App) *chi.Mux {
 			r.Get("/{id}", app.GetAgentHandler)
 		})
 
+		// Public activity feed (no auth required)
+		r.Get("/api/ui/activity", app.GetPublicActivityHandler)
+
 		// JWT-protected UI routes
 		r.Route("/api/ui", func(r chi.Router) {
 			r.Use(app.JWTAuth)
