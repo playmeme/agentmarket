@@ -395,6 +395,27 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		affected, _ := result.RowsAffected()
 		log.Info("webhook: checkout.session.completed processed", "session_id", cs.ID, "payment_intent", paymentIntentID, "rows_affected", affected)
 
+	case "checkout.session.expired":
+		var cs stripe.CheckoutSession
+		if err := json.Unmarshal(event.Data.Raw, &cs); err != nil {
+			log.Error("webhook: failed to parse checkout.session.expired", "error", err)
+			writeError(w, http.StatusBadRequest, "failed to parse event data")
+			return
+		}
+
+		result, err := app.DB.Exec(
+			`UPDATE jobs SET stripe_checkout_session_id = '', updated_at = CURRENT_TIMESTAMP
+			 WHERE stripe_checkout_session_id = ? AND status = 'AWAITING_PAYMENT'`,
+			cs.ID,
+		)
+		if err != nil {
+			log.Error("webhook: failed to clear stale session id after checkout.session.expired", "session_id", cs.ID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		affected, _ := result.RowsAffected()
+		log.Info("webhook: checkout.session.expired processed, stale session ID cleared", "session_id", cs.ID, "rows_affected", affected)
+
 	default:
 		log.Info("webhook: unhandled event type", "type", event.Type)
 	}
