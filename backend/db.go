@@ -418,6 +418,32 @@ var migrations = []func(tx *sql.Tx) error{
 		}
 		return nil
 	},
+
+	// version 15 → 16: Issue #136 — separate financial fields on jobs and milestones.
+	// Stores original cost, coupon discount, tip, and actual transaction amount
+	// independently so financial records are unambiguous. The "amount" (milestones)
+	// and "total_payout" (jobs) remain the original/agreed price. The new fields
+	// record what actually happened at checkout time.
+	func(tx *sql.Tx) error {
+		alters := []struct {
+			sql string
+			desc string
+		}{
+			{`ALTER TABLE jobs ADD COLUMN coupon_cents INTEGER NOT NULL DEFAULT 0`, "coupon_cents on jobs"},
+			{`ALTER TABLE jobs ADD COLUMN transaction_cents INTEGER NOT NULL DEFAULT 0`, "transaction_cents on jobs"},
+			{`ALTER TABLE milestones ADD COLUMN coupon_cents INTEGER NOT NULL DEFAULT 0`, "coupon_cents on milestones"},
+			{`ALTER TABLE milestones ADD COLUMN tip_cents INTEGER NOT NULL DEFAULT 0`, "tip_cents on milestones"},
+			{`ALTER TABLE milestones ADD COLUMN transaction_cents INTEGER NOT NULL DEFAULT 0`, "transaction_cents on milestones"},
+		}
+		for _, a := range alters {
+			if _, err := tx.Exec(a.sql); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column name") {
+					return fmt.Errorf("migration 15→16: add %s: %w", a.desc, err)
+				}
+			}
+		}
+		return nil
+	},
 }
 
 // rawMigrations holds migrations that need a raw *sql.DB (and therefore a raw
