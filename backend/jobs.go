@@ -746,7 +746,22 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check if there is a next PENDING milestone.
+	// Check if there are any remaining unpaid milestones (PENDING or REVIEW_REQUESTED).
+	// We must check for both statuses: PENDING means not yet submitted, REVIEW_REQUESTED
+	// means the agent submitted early (before the previous milestone was approved). In both
+	// cases the job should NOT be marked COMPLETED yet. We pick the next PENDING milestone
+	// (lowest order_index) for the AWAITING_PAYMENT notification; if none are PENDING but
+	// some are REVIEW_REQUESTED the job stays IN_PROGRESS until those are also approved.
+	var remainingCount int
+	if cntErr := app.DB.QueryRow(
+		`SELECT COUNT(*) FROM milestones WHERE sow_id = ? AND status != 'PAID'`,
+		m.SowID,
+	).Scan(&remainingCount); cntErr != nil {
+		log.Error("milestone approval: failed to count remaining milestones", "sow_id", m.SowID, "error", cntErr)
+		// Non-fatal: fall through to the per-status checks below.
+		remainingCount = -1
+	}
+
 	var nextMilestoneID string
 	var nextMilestoneAmount int64
 	var nextMilestoneOrderIndex int
@@ -757,8 +772,12 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		m.SowID,
 	).Scan(&nextMilestoneID, &nextMilestoneAmount, &nextMilestoneOrderIndex)
 
-	if nextMilestoneErr == nil {
-		// There is a next milestone — put job back to AWAITING_PAYMENT.
+	if remainingCount > 0 && nextMilestoneErr == sql.ErrNoRows {
+		// There are remaining milestones but none are PENDING — they are in
+		// REVIEW_REQUESTED. The job stays IN_PROGRESS; nothing to do here.
+		log.Info("milestone approved: remaining milestones are in REVIEW_REQUESTED, job stays IN_PROGRESS", "job_id", jobID)
+	} else if nextMilestoneErr == nil {
+		// There is a next PENDING milestone — put job back to AWAITING_PAYMENT.
 		nextMilestoneNumber := nextMilestoneOrderIndex + 1
 		if _, dbErr := app.DB.Exec(
 			`UPDATE jobs SET status = 'AWAITING_PAYMENT', current_milestone_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -1175,6 +1194,26 @@ func (app *App) UIDeliverJobHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeliverJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Block delivery on jobs that have milestones — each milestone must be
+	// submitted individually via the SubmitMilestoneHandler so the employer
+	// can review and approve them one by one. This mirrors the same guard in
+	// DeliverJobHandler (API key path).
+	var milestoneCount int
+	if err := app.DB.QueryRow(
+		`SELECT COUNT(*) FROM milestones m
+		 JOIN sow s ON m.sow_id = s.id
+		 WHERE s.job_id = ?`,
+		jobID,
+	).Scan(&milestoneCount); err != nil {
+		log.Error("ui deliver job: failed to check milestones", "job_id", jobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if milestoneCount > 0 {
+		writeError(w, http.StatusBadRequest, "job has milestones — submit each milestone via POST /milestones/{milestone_id}/submit instead")
 		return
 	}
 
