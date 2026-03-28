@@ -116,15 +116,11 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If the milestone amount is $0, skip Stripe entirely and advance the job.
+	// Do NOT mark the milestone PAID — it stays PENDING so the agent can still
+	// submit deliverables and the manager can approve them. Only payment is
+	// skipped, not the work/review cycle. This matches the coupon-covers-full
+	// path below which also leaves milestones PENDING.
 	if baseAmountCents == 0 && currentMilestoneID != "" {
-		if _, dbErr := app.DB.Exec(
-			`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			currentMilestoneID,
-		); dbErr != nil {
-			log.Error("checkout: failed to mark $0 milestone PAID", "milestone_id", currentMilestoneID, "error", dbErr)
-			writeError(w, http.StatusInternalServerError, "database error")
-			return
-		}
 		_, dbErr := app.DB.Exec(
 			`UPDATE jobs SET status = 'IN_PROGRESS', current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 			nullableString(currentMilestoneID), jobID,
