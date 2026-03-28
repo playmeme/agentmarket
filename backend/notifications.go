@@ -70,8 +70,8 @@ func (app *App) CreateNotification(userID, jobID, notifType, title, message stri
 	}
 
 	dashboardPath := "/dashboard/employer"
-	if role == "AGENT_HANDLER" {
-		dashboardPath = "/dashboard/handler"
+	if role == "AGENT_MANAGER" {
+		dashboardPath = "/dashboard/manager"
 	}
 
 	htmlBody := "<h2>" + title + "</h2><p>" + message + "</p>" +
