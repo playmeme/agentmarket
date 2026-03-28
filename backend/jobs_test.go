@@ -644,7 +644,8 @@ func TestMilestoneLifecycleSingleMilestone(t *testing.T) {
 }
 
 // TestMilestoneLifecycleTwoMilestones verifies the multi-milestone flow:
-//   - After approving milestone 1, job moves to AWAITING_PAYMENT (not COMPLETED).
+//   - Payment is collected upfront at initial checkout.
+//   - After approving milestone 1, job stays IN_PROGRESS (not COMPLETED).
 //   - After approving milestone 2 (last), job moves to COMPLETED.
 func TestMilestoneLifecycleTwoMilestones(t *testing.T) {
 	t.Parallel()
@@ -699,24 +700,13 @@ func TestMilestoneLifecycleTwoMilestones(t *testing.T) {
 		t.Fatalf("m1 approve: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// After approving m1 (not last), job should be AWAITING_PAYMENT for m2.
+	// After approving m1 (not last), job should stay IN_PROGRESS with
+	// current_milestone_id advanced to m2. Payment was collected upfront;
+	// milestones are work checkpoints, not separate payment gates.
 	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
 	json.Unmarshal(rr.Body.Bytes(), &job)
-	if job.Status != "AWAITING_PAYMENT" {
-		t.Errorf("job should be AWAITING_PAYMENT after m1 approved, got %q", job.Status)
-	}
-
-	// Pay for milestone 2 via coupon.
-	coupon2 := fmt.Sprintf("M2-%s", jobID[:6])
-	if _, err := app.DB.Exec(
-		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, coupon2,
-	); err != nil {
-		t.Fatalf("insert coupon m2: %v", err)
-	}
-	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
-		map[string]string{"coupon_code": coupon2}, employerTok)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("checkout m2: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("job should stay IN_PROGRESS after m1 approved, got %q", job.Status)
 	}
 
 	// --- Milestone 2: submit then approve ---
@@ -832,8 +822,8 @@ func TestUIDeliverJobBlockedWhenMilestonesExist(t *testing.T) {
 }
 
 // TestMilestoneLifecycleThreeMilestones verifies the full 3-milestone flow — the specific
-// scenario reported in issue #128. After approving milestone 1, the job must NOT be
-// marked COMPLETED; it must proceed to AWAITING_PAYMENT for milestone 2, then milestone 3.
+// scenario reported in issue #128. Payment is collected upfront. After approving each
+// non-final milestone, the job stays IN_PROGRESS. After the last milestone, COMPLETED.
 func TestMilestoneLifecycleThreeMilestones(t *testing.T) {
 	t.Parallel()
 	app := setupTestApp(t)
@@ -904,39 +894,39 @@ func TestMilestoneLifecycleThreeMilestones(t *testing.T) {
 	m2ID := job.Milestones[1].ID
 	m3ID := job.Milestones[2].ID
 
-	runMilestone := func(mID, couponSuffix string) {
+	// Payment is collected upfront at initial checkout — one payment covers all milestones.
+	couponCode := fmt.Sprintf("MS-%s", jobID[:6])
+	if _, err := app.DB.Exec(
+		`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, couponCode,
+	); err != nil {
+		t.Fatalf("insert coupon: %v", err)
+	}
+	rr = doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
+		map[string]string{"coupon_code": couponCode}, employerTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("checkout: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify IN_PROGRESS after checkout.
+	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
+	json.Unmarshal(rr.Body.Bytes(), &job)
+	if job.Status != "IN_PROGRESS" {
+		t.Fatalf("expected IN_PROGRESS after checkout, got %q", job.Status)
+	}
+
+	// Milestones are work checkpoints, not payment gates. Each milestone:
+	// agent submits → employer approves. No per-milestone checkout.
+	runMilestone := func(mID string) {
 		t.Helper()
-		couponCode := fmt.Sprintf("MS-%s-%s", mID[:4], couponSuffix)
-		if _, err := app.DB.Exec(
-			`INSERT INTO coupons (code, value, max_uses, times_used) VALUES (?, '100%', 1, 0)`, couponCode,
-		); err != nil {
-			t.Fatalf("insert coupon %s: %v", couponCode, err)
-		}
-		rr := doRequest(t, router, http.MethodPost, "/api/ui/jobs/"+jobID+"/checkout",
-			map[string]string{"coupon_code": couponCode}, employerTok)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("checkout %s: expected 200, got %d: %s", mID, rr.Code, rr.Body.String())
-		}
-
-		// Verify IN_PROGRESS.
-		rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
-		json.Unmarshal(rr.Body.Bytes(), &job)
-		if job.Status != "IN_PROGRESS" {
-			t.Fatalf("expected IN_PROGRESS after checkout for %s, got %q", mID, job.Status)
-		}
-
-		// Agent submits milestone.
 		submitBody := SubmitProofRequest{
 			ProofOfWorkURL:   "https://example.com/" + mID,
 			ProofOfWorkNotes: "Done",
 		}
-		rr = doRequest(t, router, http.MethodPost,
+		rr := doRequest(t, router, http.MethodPost,
 			"/api/v1/jobs/"+jobID+"/milestones/"+mID+"/submit", submitBody, agentAPIKey)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("submit %s: expected 200, got %d: %s", mID, rr.Code, rr.Body.String())
 		}
-
-		// Employer approves milestone.
 		rr = doRequest(t, router, http.MethodPost,
 			"/api/ui/jobs/"+jobID+"/milestones/"+mID+"/approve", nil, employerTok)
 		if rr.Code != http.StatusOK {
@@ -945,33 +935,33 @@ func TestMilestoneLifecycleThreeMilestones(t *testing.T) {
 	}
 
 	// --- Milestone 1 ---
-	runMilestone(m1ID, "1")
+	runMilestone(m1ID)
 
-	// After M1 approved, job must NOT be COMPLETED — must be AWAITING_PAYMENT.
+	// After M1 approved, job must NOT be COMPLETED — stays IN_PROGRESS.
 	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
 	json.Unmarshal(rr.Body.Bytes(), &job)
 	if job.Status == "COMPLETED" {
 		t.Errorf("BUG: job marked COMPLETED after only milestone 1 of 3 was approved")
 	}
-	if job.Status != "AWAITING_PAYMENT" {
-		t.Errorf("expected AWAITING_PAYMENT after m1 approved, got %q", job.Status)
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("expected IN_PROGRESS after m1 approved, got %q", job.Status)
 	}
 
 	// --- Milestone 2 ---
-	runMilestone(m2ID, "2")
+	runMilestone(m2ID)
 
-	// After M2 approved, job must NOT be COMPLETED — must be AWAITING_PAYMENT.
+	// After M2 approved, job must NOT be COMPLETED — stays IN_PROGRESS.
 	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
 	json.Unmarshal(rr.Body.Bytes(), &job)
 	if job.Status == "COMPLETED" {
 		t.Errorf("BUG: job marked COMPLETED after only milestone 2 of 3 was approved")
 	}
-	if job.Status != "AWAITING_PAYMENT" {
-		t.Errorf("expected AWAITING_PAYMENT after m2 approved, got %q", job.Status)
+	if job.Status != "IN_PROGRESS" {
+		t.Errorf("expected IN_PROGRESS after m2 approved, got %q", job.Status)
 	}
 
 	// --- Milestone 3 (last) ---
-	runMilestone(m3ID, "3")
+	runMilestone(m3ID)
 
 	// After M3 (last) approved, job MUST be COMPLETED.
 	rr = doRequest(t, router, http.MethodGet, "/api/ui/jobs/"+jobID, nil, employerTok)
