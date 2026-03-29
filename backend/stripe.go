@@ -341,7 +341,8 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sigHeader := r.Header.Get("Stripe-Signature")
-	event, err := webhook.ConstructEvent(payload, sigHeader, app.Config.StripeWebhookSecret)
+	event, err := webhook.ConstructEventWithOptions(payload, sigHeader, app.Config.StripeWebhookSecret,
+		webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 	if err != nil {
 		log.Warn("webhook: signature verification failed", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid webhook signature")
