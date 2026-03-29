@@ -286,6 +286,22 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			paymentIntentID = cs.PaymentIntent.ID
 		}
 
+		// Mark the associated milestone as PAID (if any) before advancing the job.
+		var currentMilestoneID *string
+		_ = app.DB.QueryRow(
+			`SELECT current_milestone_id FROM jobs WHERE stripe_checkout_session_id = ? AND status = 'AWAITING_PAYMENT'`,
+			cs.ID,
+		).Scan(&currentMilestoneID)
+
+		if currentMilestoneID != nil && *currentMilestoneID != "" {
+			if _, dbErr := app.DB.Exec(
+				`UPDATE milestones SET status = 'PAID', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+				*currentMilestoneID,
+			); dbErr != nil {
+				log.Error("webhook: failed to mark milestone PAID", "milestone_id", *currentMilestoneID, "error", dbErr)
+			}
+		}
+
 		result, err := app.DB.Exec(
 			`UPDATE jobs SET status = 'IN_PROGRESS', stripe_payment_intent = ?, updated_at = CURRENT_TIMESTAMP
 			 WHERE stripe_checkout_session_id = ? AND status = 'AWAITING_PAYMENT'`,

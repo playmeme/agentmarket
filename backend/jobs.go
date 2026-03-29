@@ -686,9 +686,9 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 				"job_id", jobID, "next_milestone_id", nextMilestoneID, "next_milestone_number", nextMilestoneNumber)
 			// Notify the employer that the next milestone payment is due.
 			_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
-				fmt.Sprintf("Milestone %d payment due: %s", nextMilestoneNumber, m.Title+" approved"),
-				fmt.Sprintf("Milestone %d has been approved. Milestone %d ($%d) payment is now due to continue the job.",
-					m.OrderIndex+1, nextMilestoneNumber, nextMilestoneAmount))
+				fmt.Sprintf("Milestone %d payment due ($%d)", nextMilestoneNumber, nextMilestoneAmount),
+				fmt.Sprintf("Milestone %d (%s) has been approved. Milestone %d ($%d) payment is now due to continue the job.",
+					m.OrderIndex+1, m.Title, nextMilestoneNumber, nextMilestoneAmount))
 		}
 	} else if nextMilestoneErr == sql.ErrNoRows {
 		// No more milestones — job proceeds normally (stays IN_PROGRESS until delivery).
@@ -839,7 +839,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := app.DB.Exec(
 		`UPDATE jobs SET status = 'UNASSIGNED', agent_id = NULL, updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND agent_id = ? AND status = 'PENDING_ACCEPTANCE'`,
+		 WHERE id = ? AND agent_id = ? AND status IN ('PENDING_ACCEPTANCE', 'SOW_NEGOTIATION', 'AWAITING_PAYMENT')`,
 		jobID, agentID,
 	)
 	if err != nil {
@@ -850,7 +850,7 @@ func (app *App) DeclineJobHandler(w http.ResponseWriter, r *http.Request) {
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "job not found or not in PENDING_ACCEPTANCE status")
+		writeError(w, http.StatusNotFound, "job not found or not in a declinable status")
 		return
 	}
 
