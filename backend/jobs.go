@@ -777,24 +777,35 @@ func (app *App) ApproveMilestoneHandler(w http.ResponseWriter, r *http.Request) 
 		// REVIEW_REQUESTED. The job stays IN_PROGRESS; nothing to do here.
 		log.Info("milestone approved: remaining milestones are in REVIEW_REQUESTED, job stays IN_PROGRESS", "job_id", jobID)
 	} else if nextMilestoneErr == nil {
-		// There is a next PENDING milestone — advance to it and stay IN_PROGRESS.
-		// Payment is collected upfront at initial checkout; milestones are work
-		// checkpoints, not separate payment gates.
+		// There is a next PENDING milestone — advance to it.
+		// If the next milestone has a non-zero amount, transition the job to
+		// AWAITING_PAYMENT so the employer sees the payment form. If it's $0,
+		// stay IN_PROGRESS (no payment needed).
 		nextMilestoneNumber := nextMilestoneOrderIndex + 1
+		nextStatus := "IN_PROGRESS"
+		if nextMilestoneAmount > 0 {
+			nextStatus = "AWAITING_PAYMENT"
+		}
 		if _, dbErr := app.DB.Exec(
-			`UPDATE jobs SET current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			nextMilestoneID, jobID,
+			`UPDATE jobs SET status = ?, current_milestone_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			nextStatus, nextMilestoneID, jobID,
 		); dbErr != nil {
 			log.Error("milestone approval: failed to advance to next milestone", "job_id", jobID, "error", dbErr)
 			// Non-fatal: log and continue, job will be stuck on old milestone but milestone is PAID.
 		} else {
 			log.Info("milestone approved: advanced to next milestone",
-				"job_id", jobID, "next_milestone_id", nextMilestoneID, "next_milestone_number", nextMilestoneNumber)
-			// Notify the employer that the next milestone is ready for work.
-			_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
-				fmt.Sprintf("Milestone %d started: %s", nextMilestoneNumber, m.Title+" approved"),
-				fmt.Sprintf("Milestone %d has been approved. Milestone %d is now in progress.",
-					m.OrderIndex+1, nextMilestoneNumber))
+				"job_id", jobID, "next_milestone_id", nextMilestoneID, "next_milestone_number", nextMilestoneNumber, "status", nextStatus)
+			if nextStatus == "AWAITING_PAYMENT" {
+				_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
+					fmt.Sprintf("Payment required for Milestone %d", nextMilestoneNumber),
+					fmt.Sprintf("Milestone %d has been approved and paid. Please pay for Milestone %d to continue.",
+						m.OrderIndex+1, nextMilestoneNumber))
+			} else {
+				_ = app.CreateNotification(employerID, jobID, NotifNextMilestonePaymentDue,
+					fmt.Sprintf("Milestone %d started: %s", nextMilestoneNumber, m.Title+" approved"),
+					fmt.Sprintf("Milestone %d has been approved. Milestone %d ($0) is now in progress.",
+						m.OrderIndex+1, nextMilestoneNumber))
+			}
 		}
 	} else if nextMilestoneErr == sql.ErrNoRows {
 		// No more PENDING milestones — all milestones have been completed.
