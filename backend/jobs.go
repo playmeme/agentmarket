@@ -10,9 +10,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	stripe "github.com/stripe/stripe-go/v82"
-	stripesession "github.com/stripe/stripe-go/v82/checkout/session"
-	"github.com/stripe/stripe-go/v82/paymentintent"
+	stripe "github.com/stripe/stripe-go/v84"
+	stripesession "github.com/stripe/stripe-go/v84/checkout/session"
+	"github.com/stripe/stripe-go/v84/paymentintent"
 )
 
 // --- Models ---

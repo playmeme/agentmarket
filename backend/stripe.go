@@ -9,9 +9,9 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	stripe "github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/checkout/session"
-	"github.com/stripe/stripe-go/v82/webhook"
+	stripe "github.com/stripe/stripe-go/v84"
+	"github.com/stripe/stripe-go/v84/checkout/session"
+	"github.com/stripe/stripe-go/v84/webhook"
 )
 
 // CreateCheckoutHandler creates a Stripe Checkout Session for a job (employer only).

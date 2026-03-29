@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/httprate v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/stripe/stripe-go/v82 v82.5.1
+	github.com/stripe/stripe-go/v84 v84.4.0
 	golang.org/x/crypto v0.28.0
 	modernc.org/sqlite v1.33.0
 )
