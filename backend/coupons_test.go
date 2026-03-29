@@ -490,8 +490,8 @@ func TestApproveFirstMilestoneTriggersNextPayment(t *testing.T) {
 	if err := app.DB.QueryRow("SELECT status FROM jobs WHERE id = ?", jobID).Scan(&status); err != nil {
 		t.Fatalf("query job status: %v", err)
 	}
-	if status != "IN_PROGRESS" {
-		t.Errorf("expected IN_PROGRESS after m1 approval, got %q", status)
+	if status != "AWAITING_PAYMENT" {
+		t.Errorf("expected AWAITING_PAYMENT after m1 approval (next milestone needs payment), got %q", status)
 	}
 
 	// Employer should have a NEXT_MILESTONE_PAYMENT_DUE notification
