@@ -238,16 +238,20 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	// ----------------------------------------------------
 	// Agent must have a Stripe Connect account, else error out
 	var agentStripeAccountID sql.NullString
+	var agentID string
 	agentAcctErr := app.DB.QueryRow(
-		`SELECT u.stripe_account_id FROM users u
+		`SELECT u.stripe_account_id, u.id FROM users u
 		 JOIN jobs j ON j.agent_id = u.id
 		 WHERE j.id = ?`, jobID,
-	).Scan(&agentStripeAccountID)
+	).Scan(&agentStripeAccountID, &agentID)
 	if agentAcctErr != nil && agentAcctErr != sql.ErrNoRows {
 		log.Error("stripe checkout: failed to look up agent stripe account", "job_id", jobID, "error", agentAcctErr)
+		return
+	}
+	if !agentStripeAccountID.Valid || agentStripeAccountID.String == "" {
+		log.Error("stripe checkout: agent is missing stripe account", "agent_id", agentID, "error", agentAcctErr)
 		return  // If there's no destination, then there's no use in doing this payment.
 	}
-
 
 	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
@@ -265,7 +269,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If employer doesn't have a Stripe customer ID, create a new one in Stripe and save it
-	if employerStripeCustomerID.String == "" {
+	if !employerStripeCustomerID.Valid || employerStripeCustomerID.String == "" {
 		customerParams := &stripe.CustomerParams{
 			Email: stripe.String(employerEmail), // must have email for Stripe Link and receipts
 			Name:  stripe.String(employerName),
@@ -327,17 +331,19 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		Mode:               stripe.String(string(stripe.CheckoutSessionModePayment)),
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
 			CaptureMethod:  stripe.String("manual"),
-			TransferData:  &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
-				Destination: stripe.String(agentStripeAccountID.String),
-			},
 		},
 		SuccessURL: stripe.String(fmt.Sprintf("%s/jobs/%s?payment=success", app.Config.BaseURL, jobID)),
 		CancelURL:  stripe.String(fmt.Sprintf("%s/jobs/%s?payment=cancelled", app.Config.BaseURL, jobID)),
 	}
+	if agentStripeAccountID.String != "" {
+		params.PaymentIntentData.TransferData = &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
+			Destination: stripe.String(agentStripeAccountID.String),
+		}
+		log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccountID.String)
+	}
 	if employerStripeCustomerID.String != "" {
 		params.Customer = stripe.String(employerStripeCustomerID.String)
 	}
-	log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccountID.String)
 
 	cs, err := session.New(params)
 	if err != nil {
