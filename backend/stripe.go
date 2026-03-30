@@ -13,6 +13,7 @@ import (
 	"github.com/stripe/stripe-go/v84/account"
 	"github.com/stripe/stripe-go/v84/accountlink"
 	"github.com/stripe/stripe-go/v84/checkout/session"
+	"github.com/stripe/stripe-go/v84/customer"
 	"github.com/stripe/stripe-go/v84/webhook"
 )
 
@@ -234,6 +235,56 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ----------------------------------------------------
+	// Agent must have a Stripe Connect account, else error out
+	var agentStripeAccountID sql.NullString
+	agentAcctErr := app.DB.QueryRow(
+		`SELECT u.stripe_account_id FROM users u
+		 JOIN jobs j ON j.agent_id = u.id
+		 WHERE j.id = ?`, jobID,
+	).Scan(&agentStripeAccountID)
+	if agentAcctErr != nil && agentAcctErr != sql.ErrNoRows {
+		log.Error("stripe checkout: failed to look up agent stripe account", "job_id", jobID, "error", agentAcctErr)
+		return  // If there's no destination, then there's no use in doing this payment.
+	}
+
+	// ----------------------------------------------------
+	// Get or setup this employer's Stripe customer ID
+
+	// Fetch the employer's Stripe Customer ID from your database record
+	var employerStripeCustomerID sql.NullString
+	var employerEmail, employerName string
+	emplAcctErr := app.DB.QueryRow(
+		"SELECT stripe_customer_id, email, name FROM users WHERE id = ?", employerID,
+	).Scan(&employerStripeCustomerID, &employerEmail, &employerName)
+
+	if emplAcctErr != nil {
+		slog.Warn("stripe checkout: db read error", "employer user_id", employerID, "error", err)
+	}
+
+	// If they don't have one, create a new one in Stripe and save it
+	if employerStripeCustomerID.String == "" {
+		customerParams := &stripe.CustomerParams{
+			Email: stripe.String(employerEmail), // must have email for Stripe Link and receipts
+			Name:  stripe.String(employerName),
+			// Storing internal DB ID in Stripe's metadata makes debugging easier when cross-referencing records
+			Metadata: map[string]string{
+				"internal_user_id": employerID,
+			},
+		}
+		newCustomer, err := customer.New(customerParams)
+		if err != nil {
+			slog.Warn("stripe checkout: failed to create customer profile", "employer_id", employerID, "error", err)
+		}
+		employerStripeCustomerID.String = newCustomer.ID
+
+		if _, err := app.DB.Exec("UPDATE users SET stripe_customer_id = ? WHERE id = ?", employerStripeCustomerID, employerID); err != nil {
+			slog.Warn("update stripe fields: failed to set new customer_id", "user_id", employerID, "error", err)
+		}
+		log.Info("created new stripe customer", "employer_id", employerID, "stripe_customer_id", employerStripeCustomerID)
+	}
+
+
 	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
 
@@ -275,29 +326,17 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		LineItems:          lineItems,
 		Mode:               stripe.String(string(stripe.CheckoutSessionModePayment)),
+		Customer:           stripe.String(employerStripeCustomerID.String),
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
-			CaptureMethod: stripe.String("manual"),
+			CaptureMethod:  stripe.String("manual"),
+			TransferData:  &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
+				Destination: stripe.String(agentStripeAccountID.String),
+			},
 		},
 		SuccessURL: stripe.String(fmt.Sprintf("%s/jobs/%s?payment=success", app.Config.BaseURL, jobID)),
 		CancelURL:  stripe.String(fmt.Sprintf("%s/jobs/%s?payment=cancelled", app.Config.BaseURL, jobID)),
 	}
-
-	// If the agent has a Stripe Connect account, route funds to them on capture.
-	var agentStripeAccount sql.NullString
-	agentAcctErr := app.DB.QueryRow(
-		`SELECT u.stripe_account_id FROM users u
-		 JOIN jobs j ON j.agent_id = u.id
-		 WHERE j.id = ?`, jobID,
-	).Scan(&agentStripeAccount)
-	if agentAcctErr != nil && agentAcctErr != sql.ErrNoRows {
-		log.Error("checkout: failed to look up agent stripe account", "job_id", jobID, "error", agentAcctErr)
-	}
-	if agentStripeAccount.Valid && agentStripeAccount.String != "" {
-		params.PaymentIntentData.TransferData = &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
-			Destination: stripe.String(agentStripeAccount.String),
-		}
-		log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccount.String)
-	}
+	log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccountID.String)
 
 	cs, err := session.New(params)
 	if err != nil {
