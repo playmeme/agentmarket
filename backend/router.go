@@ -150,6 +150,13 @@ func NewRouter(app *App) *chi.Mux {
 			})
 
 			r.Post("/coupons/validate", app.ValidateCouponHandler)
+
+			// Stripe Connect routes
+			r.Route("/stripe/connect", func(r chi.Router) {
+				r.Post("/onboard", app.ConnectOnboardHandler)
+				r.Get("/status", app.ConnectStatusHandler)
+				r.Put("/account", app.UpdateStripeFieldsHandler)
+			})
 		})
 
 		// Public webhook routes (no auth)
