@@ -325,7 +325,6 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
 		LineItems:          lineItems,
 		Mode:               stripe.String(string(stripe.CheckoutSessionModePayment)),
-		Customer:           stripe.String(employerStripeCustomerID.String),
 		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
 			CaptureMethod:  stripe.String("manual"),
 			TransferData:  &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
@@ -334,6 +333,9 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		SuccessURL: stripe.String(fmt.Sprintf("%s/jobs/%s?payment=success", app.Config.BaseURL, jobID)),
 		CancelURL:  stripe.String(fmt.Sprintf("%s/jobs/%s?payment=cancelled", app.Config.BaseURL, jobID)),
+	}
+	if employerStripeCustomerID.String != "" {
+		params.Customer = stripe.String(employerStripeCustomerID.String)
 	}
 	log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccountID.String)
 
