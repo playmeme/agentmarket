@@ -248,10 +248,12 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return  // If there's no destination, then there's no use in doing this payment.
 	}
 
-	// ----------------------------------------------------
-	// Get or setup this employer's Stripe customer ID
 
-	// Fetch the employer's Stripe Customer ID from your database record
+	// --- Stripe checkout for full or partial (after discount) payment ---
+	stripe.Key = app.Config.StripeSecretKey
+
+
+	// Get or setup this employer's Stripe customer ID
 	var employerStripeCustomerID sql.NullString
 	var employerEmail, employerName string
 	emplAcctErr := app.DB.QueryRow(
@@ -262,7 +264,7 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("stripe checkout: db read error", "employer user_id", employerID, "error", err)
 	}
 
-	// If they don't have one, create a new one in Stripe and save it
+	// If employer doesn't have a Stripe customer ID, create a new one in Stripe and save it
 	if employerStripeCustomerID.String == "" {
 		customerParams := &stripe.CustomerParams{
 			Email: stripe.String(employerEmail), // must have email for Stripe Link and receipts
@@ -284,9 +286,6 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		log.Info("created new stripe customer", "employer_id", employerID, "stripe_customer_id", employerStripeCustomerID)
 	}
 
-
-	// --- Stripe checkout for full or partial (after discount) payment ---
-	stripe.Key = app.Config.StripeSecretKey
 
 	var productName string
 	if currentMilestoneID != "" {
