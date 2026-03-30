@@ -248,10 +248,11 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		log.Error("stripe checkout: failed to look up agent stripe account", "job_id", jobID, "error", agentAcctErr)
 		return
 	}
-	if !agentStripeAccountID.Valid || agentStripeAccountID.String == "" {
-		log.Error("stripe checkout: agent is missing stripe account", "agent_id", agentID, "error", agentAcctErr)
-		return  // If there's no destination, then there's no use in doing this payment.
-	}
+	// TODO: TEMPORARILY DISABLED UNTIL STRIPE ONBOARDING IS MANDATORY
+	//	if !agentStripeAccountID.Valid || agentStripeAccountID.String == "" {
+	//		log.Error("stripe checkout: agent is missing stripe account", "agent_id", agentID, "error", agentAcctErr)
+	//		return  // If there's no destination, then there's no use in doing this payment.
+	//	}
 
 	// --- Stripe checkout for full or partial (after discount) payment ---
 	stripe.Key = app.Config.StripeSecretKey
