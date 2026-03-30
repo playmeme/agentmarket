@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	stripe "github.com/stripe/stripe-go/v84"
+	"github.com/stripe/stripe-go/v84/account"
+	"github.com/stripe/stripe-go/v84/accountlink"
 	"github.com/stripe/stripe-go/v84/checkout/session"
 	"github.com/stripe/stripe-go/v84/webhook"
 )
@@ -280,6 +282,23 @@ func (app *App) CreateCheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		CancelURL:  stripe.String(fmt.Sprintf("%s/jobs/%s?payment=cancelled", app.Config.BaseURL, jobID)),
 	}
 
+	// If the agent has a Stripe Connect account, route funds to them on capture.
+	var agentStripeAccount sql.NullString
+	agentAcctErr := app.DB.QueryRow(
+		`SELECT u.stripe_account_id FROM users u
+		 JOIN jobs j ON j.agent_id = u.id
+		 WHERE j.id = ?`, jobID,
+	).Scan(&agentStripeAccount)
+	if agentAcctErr != nil && agentAcctErr != sql.ErrNoRows {
+		log.Error("checkout: failed to look up agent stripe account", "job_id", jobID, "error", agentAcctErr)
+	}
+	if agentStripeAccount.Valid && agentStripeAccount.String != "" {
+		params.PaymentIntentData.TransferData = &stripe.CheckoutSessionPaymentIntentDataTransferDataParams{
+			Destination: stripe.String(agentStripeAccount.String),
+		}
+		log.Info("checkout: transfer_data set for agent connected account", "job_id", jobID, "destination", agentStripeAccount.String)
+	}
+
 	cs, err := session.New(params)
 	if err != nil {
 		log.Error("checkout: stripe session creation failed", "job_id", jobID, "error", err)
@@ -418,4 +437,151 @@ func (app *App) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// ConnectOnboardHandler creates a Stripe Connect Express account for the
+// authenticated user and returns an onboarding link. If the user already has a
+// connected account, it generates a fresh onboarding link for that account.
+// POST /api/ui/stripe/connect/onboard
+func (app *App) ConnectOnboardHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "connect_onboard")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+	stripe.Key = app.Config.StripeSecretKey
+
+	// Check if user already has a connected account.
+	var existingID sql.NullString
+	if err := app.DB.QueryRow("SELECT stripe_account_id FROM users WHERE id = ?", userID).Scan(&existingID); err != nil {
+		log.Error("connect onboard: db error", "user_id", userID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	accountID := ""
+	if existingID.Valid && existingID.String != "" {
+		accountID = existingID.String
+	} else {
+		// Create a new Express account.
+		acctParams := &stripe.AccountParams{
+			Type: stripe.String(string(stripe.AccountTypeExpress)),
+			Capabilities: &stripe.AccountCapabilitiesParams{
+				Transfers: &stripe.AccountCapabilitiesTransfersParams{
+					Requested: stripe.Bool(true),
+				},
+			},
+		}
+		acct, err := account.New(acctParams)
+		if err != nil {
+			log.Error("connect onboard: failed to create express account", "user_id", userID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to create Stripe Connect account")
+			return
+		}
+		accountID = acct.ID
+
+		if _, err := app.DB.Exec("UPDATE users SET stripe_account_id = ? WHERE id = ?", accountID, userID); err != nil {
+			log.Error("connect onboard: failed to store account id", "user_id", userID, "account_id", accountID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		log.Info("connect onboard: express account created", "user_id", userID, "account_id", accountID)
+	}
+
+	// Generate an onboarding link.
+	linkParams := &stripe.AccountLinkParams{
+		Account:    stripe.String(accountID),
+		Type:       stripe.String(string(stripe.AccountLinkTypeAccountOnboarding)),
+		RefreshURL: stripe.String(fmt.Sprintf("%s/connect/refresh", app.Config.BaseURL)),
+		ReturnURL:  stripe.String(fmt.Sprintf("%s/connect/complete", app.Config.BaseURL)),
+	}
+	link, err := accountlink.New(linkParams)
+	if err != nil {
+		log.Error("connect onboard: failed to create account link", "user_id", userID, "account_id", accountID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create onboarding link")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"account_id":     accountID,
+		"onboarding_url": link.URL,
+	})
+}
+
+// ConnectStatusHandler returns the Stripe Connect status for the authenticated user.
+// GET /api/ui/stripe/connect/status
+func (app *App) ConnectStatusHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "connect_status")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+
+	var acctID sql.NullString
+	if err := app.DB.QueryRow("SELECT stripe_account_id FROM users WHERE id = ?", userID).Scan(&acctID); err != nil {
+		log.Error("connect status: db error", "user_id", userID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+
+	if !acctID.Valid || acctID.String == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"connected": false,
+		})
+		return
+	}
+
+	stripe.Key = app.Config.StripeSecretKey
+	acct, err := account.GetByID(acctID.String, nil)
+	if err != nil {
+		log.Error("connect status: stripe api error", "user_id", userID, "account_id", acctID.String, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to fetch Stripe account")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"connected":         true,
+		"account_id":        acctID.String,
+		"charges_enabled":   acct.ChargesEnabled,
+		"payouts_enabled":   acct.PayoutsEnabled,
+		"details_submitted": acct.DetailsSubmitted,
+	})
+}
+
+// UpdateStripeFieldsHandler allows a user to set their own stripe_account_id
+// and/or stripe_customer_id directly. This is an escape hatch for cases where
+// the account was created outside of the onboarding flow.
+// PUT /api/ui/stripe/connect/account
+func (app *App) UpdateStripeFieldsHandler(w http.ResponseWriter, r *http.Request) {
+	log := slog.With("request_id", requestID(r.Context()), "handler", "update_stripe_fields")
+
+	userID, _ := r.Context().Value(contextKeyUserID).(string)
+
+	var req struct {
+		StripeAccountID  string `json:"stripe_account_id"`
+		StripeCustomerID string `json:"stripe_customer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.StripeAccountID != "" {
+		if _, err := app.DB.Exec("UPDATE users SET stripe_account_id = ? WHERE id = ?", req.StripeAccountID, userID); err != nil {
+			log.Error("update stripe fields: failed to set account_id", "user_id", userID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		log.Info("stripe_account_id updated", "user_id", userID, "account_id", req.StripeAccountID)
+	}
+	if req.StripeCustomerID != "" {
+		if _, err := app.DB.Exec("UPDATE users SET stripe_customer_id = ? WHERE id = ?", req.StripeCustomerID, userID); err != nil {
+			log.Error("update stripe fields: failed to set customer_id", "user_id", userID, "error", err)
+			writeError(w, http.StatusInternalServerError, "database error")
+			return
+		}
+		log.Info("stripe_customer_id updated", "user_id", userID, "customer_id", req.StripeCustomerID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
 }
