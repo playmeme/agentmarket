@@ -660,7 +660,11 @@
 					</p>
 				{:else}
 					<p style="margin: 0 0 0.5rem; color: #666; font-size: 0.9rem;">
-						Both parties have agreed to the SoW. Complete payment to start the job.
+						Both parties have agreed to the SoW. Complete payment
+						{#if currentPaymentAmountCents > 0}
+							of <strong>${(currentPaymentAmountCents / 100).toFixed(2)}</strong>
+						{/if}
+						to start the job.
 					</p>
 				{/if}
 
@@ -753,7 +757,9 @@
 							{@const totalDisplay = baseDisplay + tipCents() / 100}
 							Authorize Milestone {currentPaymentMilestoneNumber} (${totalDisplay.toFixed(2)})
 						{:else}
-							Pay Now{tipCents() > 0 ? ` (+$${(tipCents() / 100).toFixed(2)} tip)` : ''}
+							{@const baseAmt = couponApplied ? couponFinalCents / 100 : currentPaymentAmountCents / 100}
+							{@const totalAmt = baseAmt + tipCents() / 100}
+							Pay Now (${totalAmt.toFixed(2)}){tipCents() > 0 ? ` incl. $${(tipCents() / 100).toFixed(2)} tip` : ''}
 						{/if}
 					{/snippet}
 					<button class="btn btn-primary" onclick={handleCheckout} disabled={checkoutLoading}>
